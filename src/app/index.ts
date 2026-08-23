@@ -7,7 +7,12 @@ import { gitCommand } from './commands/git.js';
 import { isUserLoggedIn, ensureAuthenticated } from './lib/auth.js';
 import { getRepoStatus, getCurrentBranch, checkGitRepo } from './lib/git.js';
 import { promptOrConfirmWorkspace } from './lib/workspace.js';
-import { runAgentTask, manageConversations, startNewConversation, getStoredConversationId } from './lib/rool-agent.js';
+import {
+    runAgentTask,
+    manageConversations,
+    startNewConversation,
+    getStoredConversation,
+} from './lib/rool-agent.js';
 import { reviewCurrentChanges, generateSmartCommit } from './lib/git-ai.js';
 import { collectContextForPrompt, formatContextPayload } from './lib/context.js';
 import { extractFileChanges, promptAndApplyChanges } from './lib/patcher.js';
@@ -23,17 +28,20 @@ program.addCommand(authCommand);
 program.addCommand(gitCommand);
 
 /**
- * Ask the user how to handle the conversation session if one was cached
- * from a previous run. Lets them resume it, pick another, or start fresh.
+ * At startup, if a conversation was stored from a previous run, ask the
+ * user to resume it, pick another, or clear it and start fresh. Shows the
+ * last session's name so it's clear which one would be continued.
  */
 async function offerSessionResume(): Promise<void> {
-    // Nothing cached to resume -> just start a fresh loop.
-    if (!getStoredConversationId()) return;
+    const stored = await getStoredConversation();
+    if (!stored) return; // nothing cached to resume
+
+    const nameLabel = stored.name ? colors.accent(stored.name) : colors.muted(stored.id);
 
     const choice = await p.select({
-        message: 'A previous session was found. What would you like to do?',
+        message: `A previous session (${nameLabel}) was found. What would you like to do?`,
         options: [
-            { value: 'resume', label: '▶️  Resume the last used session' },
+            { value: 'resume', label: `▶️  Resume "${stored.name || 'last used session'}"` },
             { value: 'select', label: '🧭 Pick a different session' },
             { value: 'new', label: '🔄 Start a new session (clear memory)' },
         ],
@@ -42,7 +50,7 @@ async function offerSessionResume(): Promise<void> {
     if (p.isCancel(choice)) return;
 
     if (choice === 'resume') {
-        p.log.success('OK — resuming the last used session.');
+        p.log.success(`OK — resuming "${stored.name || 'last used session'}".`);
     } else if (choice === 'new') {
         startNewConversation();
     } else if (choice === 'select') {
@@ -185,7 +193,7 @@ async function startInteractiveSession() {
                     s.start('Fetching machines...');
                     const machines = await client.listMachines();
                     s.stop(`Found ${machines.length} machine(s):`);
-                    machines.forEach((m: any) => p.log.info(` • ${colors.primary(m.name || m.id)} [${colors.muted(m.id)}]`));
+                    machines.forEach((m: any) => p.log.info(`  ${colors.primary(m.name || m.id)} [${colors.muted(m.id)}]`));
                 } catch (e: any) {
                     p.log.error(e.message);
                 }

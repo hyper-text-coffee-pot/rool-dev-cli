@@ -35,6 +35,34 @@ export function getStoredConversationId(): string | undefined {
 }
 
 /**
+ * Retrieve metadata for the currently stored active session (if any).
+ */
+export async function getStoredConversation(): Promise<{ id: string; name?: string } | null> {
+    const savedId = getStoredConversationId();
+    if (!savedId) return null;
+
+    try {
+        const client = await ensureAuthenticated();
+        const machineId = await getActiveMachine(client);
+        const machine = client.machine(machineId);
+
+        const agents = await machine.agents.list();
+        if (!agents || agents.length === 0) return { id: savedId };
+
+        const agent = agents[0];
+        const conversations = await agent.listConversations();
+        const found = conversations.find((c: any) => c.id === savedId);
+
+        return {
+            id: savedId,
+            name: found?.name,
+        };
+    } catch {
+        return { id: savedId };
+    }
+}
+
+/**
  * Clear the current active conversation to start fresh
  */
 export function startNewConversation(): void {

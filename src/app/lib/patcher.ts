@@ -1,5 +1,5 @@
 import { writeFileSync, existsSync, readFileSync, mkdirSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
+import { resolve, dirname, normalize } from 'node:path';
 import * as diff from 'diff';
 import * as p from '@clack/prompts';
 import { colors } from '../ui/theme.js';
@@ -14,29 +14,36 @@ export interface ProposedFileChange {
 
 /**
  * Extracts proposed file modifications from the agent's response text.
- * Supports both <<<FILE: path>>> and standard ```lang File: path code fences.
  */
 export function extractFileChanges(responseText: string, rootDir = process.cwd()): ProposedFileChange[] {
     const changes: ProposedFileChange[] = [];
     const processedPaths = new Set<string>();
 
+    // Clean Windows and carriage returns first
+    const normalizedResponse = responseText.replace(/\r\n/g, '\n');
+
     // Pattern 1: Structured <<<FILE: path>>> ... <<<END_FILE>>> (or EOF)
-    const structuredRegex = /<<<FILE:\s*([^\n\r>]+)>>>\s*([\s\S]*?)(?:<<<END_FILE>>>|$)/g;
+    const structuredRegex = /<<<FILE:\s*([^\n\r>]+)>>>\s*([\s\S]*?)(?:<<<END_FILE>>>|$)/gi;
     let match: RegExpExecArray | null;
 
-    while ((match = structuredRegex.exec(responseText)) !== null) {
+    while ((match = structuredRegex.exec(normalizedResponse)) !== null) {
         const rawPath = match[1].trim().replace(/\\/g, '/');
-        let content = match[2].trim();
-        if (!rawPath || processedPaths.has(rawPath)) continue;
+        let content = match[2];
+        if (!rawPath || processedPaths.has(rawPath.toLowerCase())) continue;
 
-        // Clean any trailing unclosed delimiter
-        content = content.replace(/<<<END_FILE>>>/g, '').trimEnd() + '\n';
+        // Strip unclosed tags or trailing delimiters
+        content = content.replace(/<<<END_FILE>>>/gi, '').trimEnd() + '\n';
 
-        const absolutePath = resolve(rootDir, rawPath);
+        const absolutePath = normalize(resolve(rootDir, rawPath));
         const isNew = !existsSync(absolutePath);
-        const oldContent = isNew ? '' : readFileSync(absolutePath, 'utf-8');
+        let oldContent = '';
+        if (!isNew) {
+            try {
+                oldContent = readFileSync(absolutePath, 'utf-8').replace(/\r\n/g, '\n');
+            } catch { }
+        }
 
-        processedPaths.add(rawPath);
+        processedPaths.add(rawPath.toLowerCase());
         changes.push({
             relativePath: rawPath,
             absolutePath,
@@ -46,20 +53,24 @@ export function extractFileChanges(responseText: string, rootDir = process.cwd()
         });
     }
 
-    // Pattern 2: Markdown header with code block fallback:
-    // e.g. "### File: src/app/index.ts\n```ts\n...content...\n```"
+    // Pattern 2: Fallback for markdown codeblocks with filename header
     if (changes.length === 0) {
-        const mdFileRegex = /(?:###?\s*File:\s*|`)([a-zA-Z0-9_\-\.\/]+\.[a-zA-Z0-9]{1,6})`?\s*\n+```[a-zA-Z]*\n([\s\S]*?)```/g;
-        while ((match = mdFileRegex.exec(responseText)) !== null) {
+        const mdFileRegex = /(?:###?\s*File:\s*|`)([a-zA-Z0-9_\-\.\/]+\.[a-zA-Z0-9]{1,6})`?\s*\n+```[a-zA-Z]*\n([\s\S]*?)```/gi;
+        while ((match = mdFileRegex.exec(normalizedResponse)) !== null) {
             const rawPath = match[1].trim().replace(/\\/g, '/');
             const content = match[2].trimEnd() + '\n';
-            if (processedPaths.has(rawPath)) continue;
+            if (processedPaths.has(rawPath.toLowerCase())) continue;
 
-            const absolutePath = resolve(rootDir, rawPath);
+            const absolutePath = normalize(resolve(rootDir, rawPath));
             const isNew = !existsSync(absolutePath);
-            const oldContent = isNew ? '' : readFileSync(absolutePath, 'utf-8');
+            let oldContent = '';
+            if (!isNew) {
+                try {
+                    oldContent = readFileSync(absolutePath, 'utf-8').replace(/\r\n/g, '\n');
+                } catch { }
+            }
 
-            processedPaths.add(rawPath);
+            processedPaths.add(rawPath.toLowerCase());
             changes.push({
                 relativePath: rawPath,
                 absolutePath,
@@ -73,6 +84,9 @@ export function extractFileChanges(responseText: string, rootDir = process.cwd()
     return changes;
 }
 
+/**
+ * Display a colorized unified diff in the terminal.
+ */
 export function displayDiffPreview(change: ProposedFileChange): void {
     const header = change.isNew
         ? colors.success(`[NEW FILE] ${change.relativePath}`)
@@ -102,6 +116,9 @@ export function displayDiffPreview(change: ProposedFileChange): void {
     }
 }
 
+/**
+ * Prompt user to apply changes and write them to disk.
+ */
 export async function promptAndApplyChanges(changes: ProposedFileChange[]): Promise<boolean> {
     if (changes.length === 0) return false;
 
@@ -124,14 +141,23 @@ export async function promptAndApplyChanges(changes: ProposedFileChange[]): Prom
         return false;
     }
 
-    for (const change of changes) {
-        const dir = dirname(change.absolutePath);
-        if (!existsSync(dir)) {
-            mkdirSync(dir, { recursive: true });
-        }
-        writeFileSync(change.absolutePath, change.newContent, 'utf-8');
-        p.log.success(`Updated ${colors.accent(change.relativePath)}`);
-    }
+    const s = p.spinner();
+    s.start('Writing changes to disk...');
 
-    return true;
+    try {
+        for (const change of changes) {
+            const dir = dirname(change.absolutePath);
+            if (!existsSync(dir)) {
+                mkdirSync(dir, { recursive: true });
+            }
+            writeFileSync(change.absolutePath, change.newContent, 'utf-8');
+            p.log.success(`Wrote: ${colors.accent(change.relativePath)} -> ${colors.muted(change.absolutePath)}`);
+        }
+        s.stop(colors.success(`Successfully applied ${changes.length} file update(s)!`));
+        return true;
+    } catch (err: any) {
+        s.stop(colors.error('Failed to write changes to disk.'));
+        p.log.error(err.message || String(err));
+        return false;
+    }
 }
