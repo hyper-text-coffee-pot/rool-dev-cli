@@ -3,17 +3,19 @@
 //
 // Renders the CLI startup banner as a blocky 5x5 pixel-map built
 // from block characters. No external font assets required.
+// Case is preserved on render, so lowercase glyphs render as
+// lowercase (used for the "rool" wordmark).
 // ============================================================
 import chalk from 'chalk';
 
 /**
  * Each glyph is a 5x5 bitmap: 5 strings, each exactly 5 characters,
  * where "█" is an "on" pixel and a space is "off".
- * Fonts are defined only for the glyphs we need (ROOLDEVCLI + space);
- * unknown characters fall back to a blank space.
+ * Both uppercase and lowercase variants are provided for the glyphs
+ * the wordmark uses; any missing character falls back to a blank space.
  */
 const PIXEL_FONT: Record<string, string[]> = {
-    // R — closed bowl + diagonal leg so it reads as R, not an O.
+    // Uppercase
     R: ['█████', '█   █', '█████', '█  █ ', '█   █'],
     O: [' ███ ', '█   █', '█   █', '█   █', ' ███ '],
     L: ['█    ', '█    ', '█    ', '█    ', '█████'],
@@ -22,12 +24,23 @@ const PIXEL_FONT: Record<string, string[]> = {
     V: ['█   █', '█   █', '█   █', ' █ █ ', '  █  '],
     C: [' ███ ', '█    ', '█    ', '█    ', ' ███ '],
     I: ['█████', '  █  ', '  █  ', '  █  ', '█████'],
+
+    // Lowercase — used by the "rool dev cli" wordmark.
+    r: ['███  ', '█  █ ', '█    ', '█    ', '█    '],
+    o: [' ██  ', '█  █ ', '█  █ ', '█  █ ', ' ██  '],
+    l: ['  █  ', '  █  ', '  █  ', '  █  ', '█████'],
+    d: ['   █ ', '   █ ', ' ███ ', '█  █ ', ' ███ '],
+    e: [' ███ ', '█    ', '█████', '█    ', ' ███ '],
+    v: ['█   █', '█   █', '█   █', ' █ █ ', '  █  '],
+    c: [' ███ ', '█    ', '█    ', '█    ', ' ███ '],
+    i: [' ██  ', '     ', '  █  ', '  █  ', '  █  '],
+
     ' ': ['     ', '     ', '     ', '     ', '     '],
 };
 
-/** Resolve a single character to its five bitmap rows (default: space). */
+/** Resolve a single character to its five bitmap rows (case preserved; default: space). */
 function rowsFor(ch: string): string[] {
-    return PIXEL_FONT[ch.toUpperCase()] ?? PIXEL_FONT[' '];
+    return PIXEL_FONT[ch] ?? PIXEL_FONT[' '];
 }
 
 /**
@@ -44,7 +57,7 @@ export function render(text: string): string[] {
 }
 
 /**
- * Boils together the full startup banner: `title` rendered as a two-tone
+ * Builds the full startup banner: `title` rendered as a two-tone
  * pixel-map with `subtitle` centered beneath it.
  */
 export function pixelBanner(title: string, subtitle: string): string {

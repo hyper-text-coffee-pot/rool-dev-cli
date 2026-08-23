@@ -157,8 +157,7 @@ export async function manageConversations(): Promise<void> {
         message: `Manage session [${colors.accent(selectedConvId)}]:`,
         options: [
             { value: 'resume', label: '▶️  Resume this session' },
-            { value: 'rename', label: '✏️  Rename this session' },
-            { value: 'delete', label: '🗑️  Delete this session' },
+            { value: 'rename', label: '✏️  Rename this session' }
         ],
     });
 
@@ -176,16 +175,6 @@ export async function manageConversations(): Promise<void> {
         if (!p.isCancel(newName) && newName) {
             await selectedConv.rename(newName.trim());
             p.log.success(`Renamed to "${newName.trim()}"`);
-        }
-    } else if (actionChoice === 'delete') {
-        const confirm = await p.confirm({ message: 'Are you sure you want to delete this session?' });
-        if (confirm && !p.isCancel(confirm)) {
-            await selectedConv.delete();
-            if (currentId === selectedConvId) {
-                store.delete('activeConversationId');
-                activeConversation = null;
-            }
-            p.log.success('Session deleted.');
         }
     }
 }
