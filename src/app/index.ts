@@ -1,6 +1,6 @@
 import { Command } from 'commander';
 import * as p from '@clack/prompts';
-import { colors } from './ui/theme.js';
+import { colors, panel } from './ui/theme.js';
 import { pixelBanner } from './lib/pixel-banner.js';
 import { authCommand } from './commands/auth.js';
 import { gitCommand } from './commands/git.js';
@@ -12,6 +12,8 @@ import {
     manageConversations,
     startNewConversation,
     getStoredConversation,
+    getAccountUsage,
+    type AccountUsage,
 } from './lib/rool-agent.js';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -64,6 +66,24 @@ async function offerSessionResume(): Promise<void> {
     }
 }
 
+/**
+ * Print a short usage/credits line after an AI call completes, showing credits
+ * consumed since `before` (captured at the top of this loop iteration) if available.
+ */
+async function printUsageFooter(before: AccountUsage | null): Promise<void> {
+    const after = await getAccountUsage();
+    if (!after) return;
+
+    if (before) {
+        const used = Math.max(0, before.creditsBalance - after.creditsBalance);
+        p.log.info(colors.muted(
+            `⚡ ${used.toLocaleString()} credit(s) used this call · ${after.creditsBalance.toLocaleString()} remaining (${after.plan})`,
+        ));
+    } else {
+        p.log.info(colors.muted(`⚡ ${after.creditsBalance.toLocaleString()} credits remaining (${after.plan})`));
+    }
+}
+
 async function startInteractiveSession() {
     console.clear();
     console.log(pixelBanner('rOOL DEV CLI', 'Interactive Workspace & Automation Shell'));
@@ -79,14 +99,18 @@ async function startInteractiveSession() {
         const loggedIn = await isUserLoggedIn();
         const branch = await getCurrentBranch().catch(() => 'unknown');
         const status = await getRepoStatus().catch(() => null);
+        const usage = await getAccountUsage();
 
         const dirtyInfo = status && status.files.length > 0
             ? colors.warning(`(${status.files.length} modified)`)
             : colors.success('(clean)');
+        const creditsLabel = usage
+            ? colors.primary(`⚡ ${usage.creditsBalance.toLocaleString()} cr`)
+            : colors.muted('⚡ usage unavailable');
 
         p.intro(
             `Workspace: ${colors.accent(process.cwd())}\n` +
-            `Branch: ${colors.primary(branch)} ${dirtyInfo} | Auth: ${loggedIn ? colors.success('● In') : colors.warning('○ Out')}`
+            `Branch: ${colors.primary(branch)} ${dirtyInfo} | Auth: ${loggedIn ? colors.success('● In') : colors.warning('○ Out')} | ${creditsLabel}`
         );
 
         const action = await p.select({
@@ -95,6 +119,7 @@ async function startInteractiveSession() {
                 { value: 'ai-prompt', label: '🧠 Ask Rool (Code modification, tasks, questions)' },
                 { value: 'ai-review', label: '🔍 AI Code Review (Inspect current diff & changes)' },
                 { value: 'ai-commit', label: '📝 AI Smart Commit (Analyze diff & generate commit)' },
+                { value: 'usage', label: '📊 Usage & Balance' },
                 { value: 'git-status', label: '📊 Inspect Local Git Status' },
                 { value: 'session-manage', label: '🧭 Resume / Select a conversation session' },
                 { value: 'new-chat', label: '🔄 New Conversation (Clear Memory)' },
@@ -188,6 +213,7 @@ async function startInteractiveSession() {
                 } catch (e: any) {
                     p.log.error(e.message);
                 }
+                await printUsageFooter(usage);
                 break;
             }
 
@@ -197,6 +223,7 @@ async function startInteractiveSession() {
                 } catch (e: any) {
                     p.log.error(e.message);
                 }
+                await printUsageFooter(usage);
                 break;
             }
 
@@ -206,6 +233,25 @@ async function startInteractiveSession() {
                 } catch (e: any) {
                     p.log.error(e.message);
                 }
+                await printUsageFooter(usage);
+                break;
+            }
+
+            case 'usage': {
+                const s = p.spinner();
+                s.start('Fetching usage & balance...');
+                const live = await getAccountUsage();
+                if (!live) {
+                    s.stop('Could not fetch usage.');
+                    p.log.error('Failed to retrieve account usage — check your connection or login status.');
+                    break;
+                }
+                s.stop('Usage loaded.');
+                console.log(panel('📊 Usage & Balance', [
+                    `${colors.bold('Plan:')}                ${colors.primary(live.plan)}`,
+                    `${colors.bold('Credits remaining:')}   ${colors.success(live.creditsBalance.toLocaleString())}`,
+                    `${colors.bold('Total credits used:')}  ${colors.muted(live.totalCreditsUsed.toLocaleString())}`,
+                ]));
                 break;
             }
 

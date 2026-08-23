@@ -21,3 +21,13 @@ export function banner(title: string, subtitle?: string): string {
         borderColor: '#6366F1',
     });
 }
+
+export function panel(title: string, lines: string[]): string {
+    return boxen(lines.join('\n'), {
+        padding: 1,
+        borderStyle: 'round',
+        borderColor: '#6366F1',
+        title,
+        titleAlignment: 'center',
+    });
+}

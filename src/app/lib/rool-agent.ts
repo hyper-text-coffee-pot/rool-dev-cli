@@ -39,6 +39,30 @@ Rules:
 - Output clean, modern code matching the user's TypeScript / ESM architecture.
 `.trim();
 
+export interface AccountUsage {
+    plan: string;
+    creditsBalance: number;
+    totalCreditsUsed: number;
+}
+
+/**
+ * Fetch the current account's plan + credit balance for usage tracking in the CLI.
+ * Returns null if it can't be fetched (e.g. not authenticated, offline).
+ */
+export async function getAccountUsage(): Promise<AccountUsage | null> {
+    try {
+        const client = await ensureAuthenticated();
+        const account = await client.getAccount();
+        return {
+            plan: account.plan,
+            creditsBalance: account.creditsBalance,
+            totalCreditsUsed: account.totalCreditsUsed,
+        };
+    } catch {
+        return null;
+    }
+}
+
 /**
  * Get the cached active conversation ID for this project/machine
  */
