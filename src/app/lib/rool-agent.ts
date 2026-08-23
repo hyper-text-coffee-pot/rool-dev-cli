@@ -6,7 +6,6 @@ import { store } from '../config.js';
 import { colors } from '../ui/theme.js';
 import { getProjectOverview } from './context.js';
 
-// Cache the active conversation across turns during this CLI session
 let activeConversation: MachineConversation | null = null;
 
 export const AGENT_SYSTEM_PROMPT = `
@@ -29,10 +28,166 @@ Rules:
 `.trim();
 
 /**
- * Reset conversation if user wants a clean slate
+ * Get the cached active conversation ID for this project/machine
  */
-export function resetConversation(): void {
+export function getStoredConversationId(): string | undefined {
+    return store.get('activeConversationId') as string | undefined;
+}
+
+/**
+ * Clear the current active conversation to start fresh
+ */
+export function startNewConversation(): void {
     activeConversation = null;
+    store.delete('activeConversationId');
+    p.log.success('Started a new conversation session.');
+}
+
+/**
+ * Start a new conversation with an optional custom name prompt
+ */
+export async function startNewConversationPrompt(agent: any): Promise<MachineConversation> {
+    const sessionNameInput = await p.text({
+        message: 'Enter a name for this new session (optional):',
+        placeholder: 'e.g. Pixel Banner Refactor, Fix Auth Bug',
+    });
+
+    if (p.isCancel(sessionNameInput)) {
+        throw new Error('Cancelled.');
+    }
+
+    const sessionName = (sessionNameInput as string)?.trim() ||
+        `CLI Session (${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})`;
+
+    const conv = await agent.createConversation({
+        name: sessionName,
+        visibility: 'private',
+    });
+
+    store.set('activeConversationId', conv.id);
+    activeConversation = conv;
+    p.log.success(`Created & switched to session: ${colors.accent(sessionName)}`);
+    return conv;
+}
+
+/**
+ * Rename the currently active conversation
+ */
+export async function renameActiveSession(): Promise<void> {
+    const client = await ensureAuthenticated();
+    const machineId = await getActiveMachine(client);
+    const machine = client.machine(machineId);
+
+    const savedId = getStoredConversationId();
+    if (!savedId) {
+        p.log.warn('No active conversation to rename. Start or select one first.');
+        return;
+    }
+
+    const agents = await machine.agents.list();
+    const agent = agents.length > 0
+        ? agents[0]
+        : await machine.agents.create('assistant', { system: AGENT_SYSTEM_PROMPT });
+
+    const conversation = agent.conversation(savedId);
+
+    const newName = await p.text({
+        message: 'Enter new session name:',
+        placeholder: 'e.g. Feature: Git Automation',
+        validate: (val) => (!val || !val.trim() ? 'Name cannot be empty.' : undefined),
+    });
+
+    if (p.isCancel(newName) || !newName) return;
+
+    const s = p.spinner();
+    s.start('Renaming session in Rool...');
+    try {
+        await conversation.rename(newName.trim());
+        s.stop(`Session renamed to: ${colors.accent(newName.trim())}`);
+    } catch (err: any) {
+        s.stop('Failed to rename session.');
+        p.log.error(err.message);
+    }
+}
+
+/**
+ * Pick, switch, rename, or delete conversations from the Rool Machine
+ */
+export async function manageConversations(): Promise<void> {
+    const client = await ensureAuthenticated();
+    const machineId = await getActiveMachine(client);
+    const machine = client.machine(machineId);
+
+    const agents = await machine.agents.list();
+    const agent = agents.length > 0
+        ? agents[0]
+        : await machine.agents.create('assistant', { system: AGENT_SYSTEM_PROMPT });
+
+    const s = p.spinner();
+    s.start('Fetching conversations from Rool...');
+    const conversations = await agent.listConversations();
+    s.stop(`Found ${conversations.length} conversation(s).`);
+
+    const currentId = getStoredConversationId();
+
+    const choice = await p.select({
+        message: 'Select conversation session:',
+        options: [
+            { value: '__NEW__', label: '➕ Start a brand new named conversation' },
+            ...conversations.map((c: any) => ({
+                value: c.id,
+                label: `${c.name || 'Untitled session'} (${colors.muted(c.id)})${c.id === currentId ? colors.success(' [ACTIVE]') : ''}`,
+            })),
+        ],
+    });
+
+    if (p.isCancel(choice)) return;
+
+    if (choice === '__NEW__') {
+        try {
+            await startNewConversationPrompt(agent);
+        } catch { }
+        return;
+    }
+
+    const selectedConvId = choice as string;
+    const selectedConv = agent.conversation(selectedConvId);
+
+    const actionChoice = await p.select({
+        message: `Manage session [${colors.accent(selectedConvId)}]:`,
+        options: [
+            { value: 'resume', label: '▶️  Resume this session' },
+            { value: 'rename', label: '✏️  Rename this session' },
+            { value: 'delete', label: '🗑️  Delete this session' },
+        ],
+    });
+
+    if (p.isCancel(actionChoice)) return;
+
+    if (actionChoice === 'resume') {
+        store.set('activeConversationId', selectedConvId);
+        activeConversation = selectedConv;
+        p.log.success(`Resumed conversation: ${colors.accent(selectedConvId)}`);
+    } else if (actionChoice === 'rename') {
+        const newName = await p.text({
+            message: 'Enter new name:',
+            validate: (v) => (!v || !v.trim() ? 'Name cannot be empty' : undefined),
+        });
+        if (!p.isCancel(newName) && newName) {
+            await selectedConv.rename(newName.trim());
+            p.log.success(`Renamed to "${newName.trim()}"`);
+        }
+    } else if (actionChoice === 'delete') {
+        const confirm = await p.confirm({ message: 'Are you sure you want to delete this session?' });
+        if (confirm && !p.isCancel(confirm)) {
+            await selectedConv.delete();
+            if (currentId === selectedConvId) {
+                store.delete('activeConversationId');
+                activeConversation = null;
+            }
+            p.log.success('Session deleted.');
+        }
+    }
 }
 
 export async function getActiveMachine(client: RoolClient): Promise<string> {
@@ -65,28 +220,51 @@ export async function getActiveMachine(client: RoolClient): Promise<string> {
 }
 
 /**
- * Execute or continue a conversation with Rool Agent with persistent multi-turn memory.
+ * Get or resume conversation handle
+ */
+async function getOrCreateConversation(agent: any): Promise<MachineConversation> {
+    if (activeConversation) {
+        return activeConversation;
+    }
+
+    const savedId = getStoredConversationId();
+    if (savedId) {
+        try {
+            const conv = agent.conversation(savedId);
+            activeConversation = conv;
+            return conv;
+        } catch {
+            store.delete('activeConversationId');
+        }
+    }
+
+    // Create new session if none exists
+    const conv = await agent.createConversation({
+        name: `CLI Session (${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})`,
+        visibility: 'private',
+    });
+
+    store.set('activeConversationId', conv.id);
+    activeConversation = conv;
+    return conv;
+}
+
+/**
+ * Execute or continue conversation with Rool Mind
  */
 export async function runAgentTask(promptText: string, contextPayload?: string): Promise<string> {
     const client = await ensureAuthenticated();
     const machineId = await getActiveMachine(client);
     const machine = client.machine(machineId);
+
+    const agents = await machine.agents.list();
+    const agent = agents.length > 0
+        ? agents[0]
+        : await machine.agents.create('assistant', { system: AGENT_SYSTEM_PROMPT });
+
+    const conversation = await getOrCreateConversation(agent);
     const projectOverview = await getProjectOverview();
 
-    // 1. Reuse existing conversation or create a new one if this is turn 1
-    if (!activeConversation) {
-        const agents = await machine.agents.list();
-        const agent = agents.length > 0
-            ? agents[0]
-            : await machine.agents.create('assistant', { system: AGENT_SYSTEM_PROMPT });
-
-        activeConversation = await agent.createConversation({
-            name: `CLI Session (${new Date().toLocaleTimeString()})`,
-            visibility: 'private',
-        });
-    }
-
-    // 2. Format prompt
     const formattedPrompt = [
         `[System Instructions]`,
         AGENT_SYSTEM_PROMPT,
@@ -97,16 +275,14 @@ export async function runAgentTask(promptText: string, contextPayload?: string):
         contextPayload ? `\n[Workspace Code Context]\n${contextPayload}` : '',
     ].filter(Boolean).join('\n\n');
 
-    // 3. Send prompt to the continuous conversation
-    await activeConversation.prompt(formattedPrompt);
+    await conversation.prompt(formattedPrompt);
 
-    // 4. Stream response to terminal
     let completeResponse = '';
     const s = p.spinner();
     s.start(colors.primary('Rool Mind thinking...'));
 
     let firstDelta = true;
-    await activeConversation.follow({
+    await conversation.follow({
         onEvent: (event: MachineRunEvent) => {
             if (event.type === 'output.delta' && event.content.type === 'text') {
                 if (firstDelta) {

@@ -4,6 +4,8 @@ export interface CliConfig {
     apiKey?: string;
     apiUrl?: string;
     userEmail?: string;
+    activeMachineId?: string;       // <--- Add this
+    activeConversationId?: string;  // <--- Add this
 }
 
 export const store = new Conf<CliConfig>({
@@ -28,4 +30,6 @@ export function saveAuth(apiKey: string, userEmail?: string): void {
 export function clearAuth(): void {
     store.delete('apiKey');
     store.delete('userEmail');
+    store.delete('activeMachineId');
+    store.delete('activeConversationId');
 }

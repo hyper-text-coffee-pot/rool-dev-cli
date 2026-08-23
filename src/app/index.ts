@@ -7,7 +7,12 @@ import { gitCommand } from './commands/git.js';
 import { isUserLoggedIn, ensureAuthenticated } from './lib/auth.js';
 import { getRepoStatus, getCurrentBranch, checkGitRepo } from './lib/git.js';
 import { promptOrConfirmWorkspace } from './lib/workspace.js';
-import { runAgentTask } from './lib/rool-agent.js';
+import {
+    runAgentTask,
+    manageConversations,
+    startNewConversation,
+    getStoredConversationId
+} from './lib/rool-agent.js';
 import { reviewCurrentChanges, generateSmartCommit } from './lib/git-ai.js';
 import { collectContextForPrompt, formatContextPayload } from './lib/context.js';
 import { extractFileChanges, promptAndApplyChanges } from './lib/patcher.js';
@@ -25,6 +30,9 @@ program.addCommand(gitCommand);
 async function startInteractiveSession() {
     console.clear();
     console.log(pixelBanner('Rool Dev CLI', 'Interactive Workspace & Automation Shell'));
+
+    const activeSessionId = getStoredConversationId();
+    const sessionLabel = activeSessionId ? colors.accent(`[Session: ${activeSessionId.slice(0, 6)}...]`) : colors.muted('[New Session]');
 
     // 1. Always verify / select active workspace first
     await promptOrConfirmWorkspace();
@@ -47,11 +55,12 @@ async function startInteractiveSession() {
         const action = await p.select({
             message: 'Choose an action:',
             options: [
-                { value: 'ai-prompt', label: '🧠 Ask Rool (Code modification, tasks, questions)' },
+                { value: 'ai-prompt', label: '🧠 Ask Rool Agent (Code modification, tasks, questions)' },
+                { value: 'conv-manage', label: '💬 Switch / Resume Conversation History' },
+                { value: 'conv-new', label: '🔄 Start Fresh Conversation (Clear Context)' },
                 { value: 'ai-review', label: '🔍 AI Code Review (Inspect current diff & changes)' },
                 { value: 'ai-commit', label: '📝 AI Smart Commit (Analyze diff & generate commit)' },
                 { value: 'git-status', label: '📊 Inspect Local Git Status' },
-                { value: 'new-chat', label: '🔄 New Conversation (Clear Memory)' },
                 { value: 'switch-workspace', label: '📂 Switch Active Folder / Repository' },
                 { value: 'rool-machines', label: '🤖 List Rool Machines' },
                 { value: 'auth-manage', label: loggedIn ? '🔒 Manage Rool Auth (Logout/Relogin)' : '🔑 Login to Rool' },
@@ -125,6 +134,16 @@ async function startInteractiveSession() {
                     p.log.info(colors.bold(`Modified files (${status.files.length}):`));
                     status.files.forEach((f) => p.log.step(`  ${f.working_dir || f.index} ${f.path}`));
                 }
+                break;
+            }
+
+            case 'conv-manage': {
+                await manageConversations();
+                break;
+            }
+
+            case 'conv-new': {
+                startNewConversation();
                 break;
             }
 
