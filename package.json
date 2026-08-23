@@ -1,0 +1,34 @@
+{
+  "name": "rool-dev-cli",
+  "version": "0.1.0",
+  "description": "A command line interface (CLI) tool for Rool Dev, providing developers with a streamlined way to interact with the Rool platform and manage their development workflows.",
+  "main": "dist/app/index.js",
+  "type": "module",
+  "bin": {
+    "rool-dev": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "start": "node dist/app/index.js"
+  },
+  "keywords": [],
+  "author": "Protocol Companies LLC",
+  "license": "ISC",
+  "dependencies": {
+    "@clack/prompts": "^1.7.0",
+    "@rool-dev/sdk": "^2.0.1",
+    "boxen": "^8.0.1",
+    "chalk": "^6.0.0",
+    "commander": "^15.0.0",
+    "conf": "^15.1.0",
+    "execa": "^10.0.1",
+    "ora": "^9.4.1",
+    "simple-git": "^3.36.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "tsup": "^8.5.1",
+    "typescript": "^7.0.2"
+  }
+}
