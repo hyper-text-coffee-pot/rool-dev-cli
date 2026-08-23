@@ -1,9 +1,12 @@
 import * as p from '@clack/prompts';
 import { RoolClient } from '@rool-dev/sdk';
-import type { MachineRunEvent } from '@rool-dev/sdk';
+import type { MachineRunEvent, MachineConversation } from '@rool-dev/sdk';
 import { ensureAuthenticated } from './auth.js';
 import { store } from '../config.js';
 import { colors } from '../ui/theme.js';
+
+// Cache the active conversation across turns during this CLI session
+let activeConversation: MachineConversation | null = null;
 
 export const AGENT_SYSTEM_PROMPT = `
 You are an expert AI software engineer operating as the backend engine for a Developer CLI.
@@ -21,8 +24,12 @@ Rules:
 `.trim();
 
 /**
- * Prompt user to select an active Rool Machine, caching the selection.
+ * Reset conversation if user wants a clean slate
  */
+export function resetConversation(): void {
+    activeConversation = null;
+}
+
 export async function getActiveMachine(client: RoolClient): Promise<string> {
     const cached = store.get('activeMachineId');
     if (cached) return cached as string;
@@ -53,26 +60,28 @@ export async function getActiveMachine(client: RoolClient): Promise<string> {
 }
 
 /**
- * Execute an agent task on the selected Rool Machine and stream results.
+ * Execute or continue a conversation with Rool Agent with persistent multi-turn memory.
  */
 export async function runAgentTask(promptText: string, contextPayload?: string): Promise<string> {
     const client = await ensureAuthenticated();
     const machineId = await getActiveMachine(client);
     const machine = client.machine(machineId);
 
-    // 1. Get or list agents on the machine
-    const agents = await machine.agents.list();
-    const agent = agents.length > 0
-        ? agents[0]
-        : await machine.agents.create('assistant', { system: AGENT_SYSTEM_PROMPT });
+    // 1. Reuse existing conversation or create a new one if this is turn 1
+    if (!activeConversation) {
+        const agents = await machine.agents.list();
+        const agent = agents.length > 0
+            ? agents[0]
+            : await machine.agents.create('assistant', { system: AGENT_SYSTEM_PROMPT });
 
-    // 2. Create a conversation
-    const conversation = await agent.createConversation({
-        name: 'CLI Task Session',
-        visibility: 'private',
-    });
+        activeConversation = await agent.createConversation({
+            name: `CLI Session (${new Date().toLocaleTimeString()})`,
+            visibility: 'private',
+        });
+    }
 
-    // 3. Assemble prompt with instructions, context, and user request
+    // 2. Format prompt
+    const isFirstTurn = true; // or track turns
     const formattedPrompt = [
         `[System Instructions]`,
         AGENT_SYSTEM_PROMPT,
@@ -81,16 +90,16 @@ export async function runAgentTask(promptText: string, contextPayload?: string):
         contextPayload ? `\n[Workspace Code Context]\n${contextPayload}` : '',
     ].filter(Boolean).join('\n\n');
 
-    // 4. Send prompt
-    await conversation.prompt(formattedPrompt);
+    // 3. Send prompt to the continuous conversation
+    await activeConversation.prompt(formattedPrompt);
 
-    // 5. Stream response to terminal
+    // 4. Stream response to terminal
     let completeResponse = '';
     const s = p.spinner();
     s.start(colors.primary('Rool Mind thinking...'));
 
     let firstDelta = true;
-    await conversation.follow({
+    await activeConversation.follow({
         onEvent: (event: MachineRunEvent) => {
             if (event.type === 'output.delta' && event.content.type === 'text') {
                 if (firstDelta) {

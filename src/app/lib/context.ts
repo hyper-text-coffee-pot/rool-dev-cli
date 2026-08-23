@@ -3,6 +3,7 @@ import { readFileSync, existsSync, statSync } from 'node:fs';
 import { resolve, relative, basename } from 'node:path';
 import { colors } from '../ui/theme.js';
 import * as p from '@clack/prompts';
+import { git, checkGitRepo } from './git.js';
 
 const IGNORE_PATTERNS = [
     '**/node_modules/**',
@@ -78,14 +79,12 @@ export async function collectContextForPrompt(prompt: string, rootDir = process.
     }
 
     // 3. Universal File Token Regex (matches any `name.ext` where ext is 1-6 alphanumeric chars)
-    // Covers .cs, .ts, .tsx, .js, .jsx, .py, .go, .rs, .java, .cpp, .c, .h, .hpp, .rb, .php, .swift, .kt, .scala, .sh, .sql, .json, .yaml, .toml, .xml, .csproj, .sln, etc.
     const universalFileRegex = /\b([a-zA-Z0-9_\-]+\.[a-zA-Z0-9]{1,6})\b/gi;
     while ((match = universalFileRegex.exec(prompt)) !== null) {
         const fileName = match[1];
         const candidates = fileMap.get(fileName);
 
         if (candidates && candidates.length > 0) {
-            // Pick best candidate (e.g. src/ over root, or first match)
             const preferred = candidates.find((f) => f.includes('/src/') || f.includes('\\src\\')) || candidates[0];
             addFile(preferred, rootDir, matchedFiles);
         }
@@ -99,6 +98,20 @@ export async function collectContextForPrompt(prompt: string, rootDir = process.
         if (existsSync(directPath) && statSync(directPath).isFile()) {
             addFile(directPath, rootDir, matchedFiles);
         }
+    }
+
+    // 5. Fallback: If no files were explicitly found, automatically attach uncommitted / modified files from Git
+    if (matchedFiles.size === 0) {
+        try {
+            const isRepo = await checkGitRepo();
+            if (isRepo) {
+                const status = await git.status();
+                const modifiedAndCreated = [...status.modified, ...status.created, ...status.not_added];
+                for (const f of modifiedAndCreated) {
+                    addFile(resolve(rootDir, f), rootDir, matchedFiles);
+                }
+            }
+        } catch { }
     }
 
     const files = Array.from(matchedFiles.entries()).map(([relPath, content]) => ({

@@ -23,7 +23,7 @@ program.addCommand(gitCommand);
 
 async function startInteractiveSession() {
     console.clear();
-    console.log(banner('ROOL DEVELOPER CLI', 'Interactive Workspace & Automation Shell'));
+    console.log(banner('Rool Dev CLI', 'Interactive Workspace & Automation Shell'));
 
     // 1. Always verify / select active workspace first
     await promptOrConfirmWorkspace();
@@ -50,6 +50,7 @@ async function startInteractiveSession() {
                 { value: 'ai-review', label: '🔍 AI Code Review (Inspect current diff & changes)' },
                 { value: 'ai-commit', label: '📝 AI Smart Commit (Analyze diff & generate commit)' },
                 { value: 'git-status', label: '📊 Inspect Local Git Status' },
+                { value: 'new-chat', label: '🔄 New Conversation (Clear Memory)' },
                 { value: 'switch-workspace', label: '📂 Switch Active Folder / Repository' },
                 { value: 'rool-machines', label: '🤖 List Rool Machines' },
                 { value: 'auth-manage', label: loggedIn ? '🔒 Manage Rool Auth (Logout/Relogin)' : '🔑 Login to Rool' },
