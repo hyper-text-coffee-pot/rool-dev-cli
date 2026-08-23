@@ -5,6 +5,9 @@ import { authCommand } from './commands/auth.js';
 import { gitCommand } from './commands/git.js';
 import { isUserLoggedIn, ensureAuthenticated } from './lib/auth.js';
 import { getRepoStatus, getCurrentBranch, checkGitRepo } from './lib/git.js';
+import { promptOrConfirmWorkspace } from './lib/workspace.js';
+import { runAgentTask } from './lib/rool-agent.js';
+import { reviewCurrentChanges, generateSmartCommit } from './lib/git-ai.js';
 
 const program = new Command();
 
@@ -13,45 +16,41 @@ program
     .description('Rool Developer CLI — interactive workspace & code automation tool')
     .version('0.1.0');
 
-// Register direct subcommands for scriptability (e.g. `rool-dev auth login`)
 program.addCommand(authCommand);
 program.addCommand(gitCommand);
 
-/**
- * Main Interactive Session Loop
- */
 async function startInteractiveSession() {
     console.clear();
     console.log(banner('ROOL DEVELOPER CLI', 'Interactive Workspace & Automation Shell'));
 
-    const loggedIn = await isUserLoggedIn();
-    const isRepo = await checkGitRepo();
+    // 1. Always verify / select active workspace first
+    await promptOrConfirmWorkspace();
 
-    // Status badges
-    const authStatus = loggedIn ? colors.success('● Authenticated') : colors.warning('○ Not Authenticated');
-    let gitStatus = colors.muted('○ No Git Repo');
-
-    if (isRepo) {
-        try {
-            const branch = await getCurrentBranch();
-            const status = await getRepoStatus();
-            const dirty = status.files.length > 0 ? colors.warning(`(${status.files.length} modified)`) : colors.success('(clean)');
-            gitStatus = `${colors.accent(branch)} ${dirty}`;
-        } catch { }
-    }
-
-    p.intro(`Session Ready | Rool: ${authStatus} | Git: ${gitStatus}`);
-
-    // Continuous interaction loop
+    // 2. Main interactive loop
     while (true) {
+        const loggedIn = await isUserLoggedIn();
+        const branch = await getCurrentBranch().catch(() => 'unknown');
+        const status = await getRepoStatus().catch(() => null);
+
+        const dirtyInfo = status && status.files.length > 0
+            ? colors.warning(`(${status.files.length} modified)`)
+            : colors.success('(clean)');
+
+        p.intro(
+            `Workspace: ${colors.accent(process.cwd())}\n` +
+            `Branch: ${colors.primary(branch)} ${dirtyInfo} | Auth: ${loggedIn ? colors.success('● In') : colors.warning('○ Out')}`
+        );
+
         const action = await p.select({
-            message: 'What would you like to do?',
+            message: 'Choose an action:',
             options: [
-                { value: 'git-status', label: '📊 Inspect Git Status & Changes' },
-                { value: 'git-commit', label: '🚀 Quick Smart Commit & Push' },
-                { value: 'rool-machines', label: '🤖 List Rool Machines & Agents' },
+                { value: 'ai-prompt', label: '🧠 Ask Rool Agent (Code modification, tasks, questions)' },
+                { value: 'ai-review', label: '🔍 AI Code Review (Inspect current diff & changes)' },
+                { value: 'ai-commit', label: '📝 AI Smart Commit (Analyze diff & generate commit)' },
+                { value: 'git-status', label: '📊 Inspect Local Git Status' },
+                { value: 'switch-workspace', label: '📂 Switch Active Folder / Repository' },
+                { value: 'rool-machines', label: '🤖 List Rool Machines' },
                 { value: 'auth-manage', label: loggedIn ? '🔒 Manage Rool Auth (Logout/Relogin)' : '🔑 Login to Rool' },
-                { value: 'task-runner', label: '⚡ Run Automated Code Task' },
                 { value: 'exit', label: '❌ Exit Session' },
             ],
         });
@@ -61,16 +60,52 @@ async function startInteractiveSession() {
             process.exit(0);
         }
 
-        // Handle interactive selections
         switch (action) {
+            case 'switch-workspace': {
+                await promptOrConfirmWorkspace();
+                break;
+            }
+
+            case 'ai-prompt': {
+                const promptInput = await p.text({
+                    message: 'What would you like Rool Agent to do?',
+                    placeholder: 'e.g. Add unit tests for auth module or create a new endpoint',
+                });
+                if (p.isCancel(promptInput) || !promptInput) break;
+
+                try {
+                    await runAgentTask(promptInput as string);
+                } catch (e: any) {
+                    p.log.error(e.message);
+                }
+                break;
+            }
+
+            case 'ai-review': {
+                try {
+                    await reviewCurrentChanges();
+                } catch (e: any) {
+                    p.log.error(e.message);
+                }
+                break;
+            }
+
+            case 'ai-commit': {
+                try {
+                    await generateSmartCommit();
+                } catch (e: any) {
+                    p.log.error(e.message);
+                }
+                break;
+            }
+
             case 'git-status': {
-                if (!isRepo) {
-                    p.log.error('Current directory is not a Git repository.');
+                if (!status) {
+                    p.log.error('Could not get repository status.');
                     break;
                 }
-                const status = await getRepoStatus();
                 if (status.files.length === 0) {
-                    p.log.success('Working directory clean. No uncommitted changes.');
+                    p.log.success('Working tree clean.');
                 } else {
                     p.log.info(colors.bold(`Modified files (${status.files.length}):`));
                     status.files.forEach((f) => p.log.step(`  ${f.working_dir || f.index} ${f.path}`));
@@ -78,56 +113,40 @@ async function startInteractiveSession() {
                 break;
             }
 
-            case 'auth-manage': {
-                if (!loggedIn) {
-                    const s = p.spinner();
-                    s.start('Opening browser for authentication...');
-                    try {
-                        await ensureAuthenticated();
-                        s.stop('Logged in successfully!');
-                    } catch (e: any) {
-                        s.stop('Failed to log in.');
-                        p.log.error(e.message);
-                    }
-                } else {
-                    const confirmLogout = await p.confirm({ message: 'Are you sure you want to log out?' });
-                    if (confirmLogout && !p.isCancel(confirmLogout)) {
-                        const { getAuth } = await import('./lib/auth.js');
-                        await getAuth().logout();
-                        p.log.success('Logged out successfully.');
-                    }
-                }
-                break;
-            }
-
             case 'rool-machines': {
-                const client = await ensureAuthenticated();
-                const s = p.spinner();
-                s.start('Fetching machines...');
                 try {
+                    const client = await ensureAuthenticated();
+                    const s = p.spinner();
+                    s.start('Fetching machines...');
                     const machines = await client.listMachines();
                     s.stop(`Found ${machines.length} machine(s):`);
-                    machines.forEach((m) => p.log.info(` • ${colors.primary(m.name || m.id)} [${m.id}]`));
+                    machines.forEach((m: any) => p.log.info(` • ${colors.primary(m.name || m.id)} [${colors.muted(m.id)}]`));
                 } catch (e: any) {
-                    s.stop('Failed to list machines.');
                     p.log.error(e.message);
                 }
                 break;
             }
 
-            case 'task-runner': {
-                p.log.info(colors.accent('Task runner ready — select or input task to execute.'));
-                // We will wire custom task scripts here
+            case 'auth-manage': {
+                if (!loggedIn) {
+                    await ensureAuthenticated();
+                    p.log.success('Logged in successfully!');
+                } else {
+                    const confirmLogout = await p.confirm({ message: 'Are you sure you want to log out?' });
+                    if (confirmLogout && !p.isCancel(confirmLogout)) {
+                        const { getAuth } = await import('./lib/auth.js');
+                        await getAuth().logout();
+                        p.log.success('Logged out.');
+                    }
+                }
                 break;
             }
         }
 
-        console.log(''); // newline between actions
+        console.log('');
     }
 }
 
-// If user provided command line arguments (e.g. `rool-dev auth status`), parse them.
-// Otherwise, start the interactive loop!
 if (process.argv.length <= 2) {
     startInteractiveSession().catch(console.error);
 } else {
