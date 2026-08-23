@@ -98,6 +98,8 @@ async function startInteractiveSession() {
                     const changes = extractFileChanges(fullResponse);
                     if (changes.length > 0) {
                         await promptAndApplyChanges(changes);
+                    } else {
+                        p.log.info(colors.muted('No file modifications were proposed in this response.'));
                     }
                 } catch (e: any) {
                     p.log.error(e.message);

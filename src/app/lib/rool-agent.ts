@@ -275,6 +275,7 @@ export async function runAgentTask(promptText: string, contextPayload?: string):
         contextPayload ? `\n[Workspace Code Context]\n${contextPayload}` : '',
     ].filter(Boolean).join('\n\n');
 
+    // Send prompt
     await conversation.prompt(formattedPrompt);
 
     let completeResponse = '';
@@ -294,6 +295,18 @@ export async function runAgentTask(promptText: string, contextPayload?: string):
             }
         },
     });
+
+    // Fallback: If streaming didn't catch everything, fetch the latest turn's content directly
+    try {
+        const turns = await conversation.listTurns();
+        if (turns && turns.length > 0) {
+            const lastTurn = turns[turns.length - 1];
+            const content = lastTurn.content as unknown;
+            if (lastTurn.role === 'assistant' && typeof content === 'string' && content.length > completeResponse.length) {
+                completeResponse = content;
+            }
+        }
+    } catch { }
 
     console.log('\n');
     return completeResponse;

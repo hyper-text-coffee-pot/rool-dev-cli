@@ -9,11 +9,12 @@ import chalk from 'chalk';
 /**
  * Each glyph is a 5x5 bitmap: 5 strings, each exactly 5 characters,
  * where "█" is an "on" pixel and a space is "off".
- * Fonts defined only for the glyphs we need (ROOLDEVCLI + space);
+ * Fonts are defined only for the glyphs we need (ROOLDEVCLI + space);
  * unknown characters fall back to a blank space.
  */
 const PIXEL_FONT: Record<string, string[]> = {
-    R: ['█████', '█   █', '█   █', '█   █', '██  █'],
+    // R — closed bowl + diagonal leg so it reads as R, not an O.
+    R: ['█████', '█   █', '█████', '█  █ ', '█   █'],
     O: [' ███ ', '█   █', '█   █', '█   █', ' ███ '],
     L: ['█    ', '█    ', '█    ', '█    ', '█████'],
     D: ['████ ', '█   █', '█   █', '█   █', '████ '],
@@ -43,7 +44,7 @@ export function render(text: string): string[] {
 }
 
 /**
- * Boils the full startup banner: `title` rendered as a two-tone
+ * Boils together the full startup banner: `title` rendered as a two-tone
  * pixel-map with `subtitle` centered beneath it.
  */
 export function pixelBanner(title: string, subtitle: string): string {

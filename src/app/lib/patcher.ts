@@ -13,36 +13,66 @@ export interface ProposedFileChange {
 }
 
 /**
- * Extracts proposed file modifications from the agent's text response.
+ * Extracts proposed file modifications from the agent's response text.
+ * Supports both <<<FILE: path>>> and standard ```lang File: path code fences.
  */
 export function extractFileChanges(responseText: string, rootDir = process.cwd()): ProposedFileChange[] {
-    const fileBlockRegex = /<<<FILE:\s*([^\n\r>]+)>>>\s*([\s\S]*?)<<<END_FILE>>>/g;
     const changes: ProposedFileChange[] = [];
+    const processedPaths = new Set<string>();
 
+    // Pattern 1: Structured <<<FILE: path>>> ... <<<END_FILE>>> (or EOF)
+    const structuredRegex = /<<<FILE:\s*([^\n\r>]+)>>>\s*([\s\S]*?)(?:<<<END_FILE>>>|$)/g;
     let match: RegExpExecArray | null;
-    while ((match = fileBlockRegex.exec(responseText)) !== null) {
-        const rawPath = match[1].trim().replace(/\\/g, '/');
-        const newContent = match[2].trimEnd() + '\n';
-        const absolutePath = resolve(rootDir, rawPath);
 
+    while ((match = structuredRegex.exec(responseText)) !== null) {
+        const rawPath = match[1].trim().replace(/\\/g, '/');
+        let content = match[2].trim();
+        if (!rawPath || processedPaths.has(rawPath)) continue;
+
+        // Clean any trailing unclosed delimiter
+        content = content.replace(/<<<END_FILE>>>/g, '').trimEnd() + '\n';
+
+        const absolutePath = resolve(rootDir, rawPath);
         const isNew = !existsSync(absolutePath);
         const oldContent = isNew ? '' : readFileSync(absolutePath, 'utf-8');
 
+        processedPaths.add(rawPath);
         changes.push({
             relativePath: rawPath,
             absolutePath,
             isNew,
             oldContent,
-            newContent,
+            newContent: content,
         });
+    }
+
+    // Pattern 2: Markdown header with code block fallback:
+    // e.g. "### File: src/app/index.ts\n```ts\n...content...\n```"
+    if (changes.length === 0) {
+        const mdFileRegex = /(?:###?\s*File:\s*|`)([a-zA-Z0-9_\-\.\/]+\.[a-zA-Z0-9]{1,6})`?\s*\n+```[a-zA-Z]*\n([\s\S]*?)```/g;
+        while ((match = mdFileRegex.exec(responseText)) !== null) {
+            const rawPath = match[1].trim().replace(/\\/g, '/');
+            const content = match[2].trimEnd() + '\n';
+            if (processedPaths.has(rawPath)) continue;
+
+            const absolutePath = resolve(rootDir, rawPath);
+            const isNew = !existsSync(absolutePath);
+            const oldContent = isNew ? '' : readFileSync(absolutePath, 'utf-8');
+
+            processedPaths.add(rawPath);
+            changes.push({
+                relativePath: rawPath,
+                absolutePath,
+                isNew,
+                oldContent,
+                newContent: content,
+            });
+        }
     }
 
     return changes;
 }
 
-/**
- * Display a colorized unified diff in the terminal.
- */
 export function displayDiffPreview(change: ProposedFileChange): void {
     const header = change.isNew
         ? colors.success(`[NEW FILE] ${change.relativePath}`)
@@ -58,7 +88,7 @@ export function displayDiffPreview(change: ProposedFileChange): void {
         'Proposed'
     );
 
-    const lines = patch.split('\n').slice(4); // strip standard diff header
+    const lines = patch.split('\n').slice(4);
     for (const line of lines) {
         if (line.startsWith('+')) {
             console.log(colors.success(line));
@@ -72,9 +102,6 @@ export function displayDiffPreview(change: ProposedFileChange): void {
     }
 }
 
-/**
- * Prompt user to apply changes and write them to disk.
- */
 export async function promptAndApplyChanges(changes: ProposedFileChange[]): Promise<boolean> {
     if (changes.length === 0) return false;
 
@@ -85,7 +112,7 @@ export async function promptAndApplyChanges(changes: ProposedFileChange[]): Prom
     }
 
     const action = await p.select({
-        message: 'Would you like to apply these changes to your local workspace?',
+        message: 'Apply these changes to your local files?',
         options: [
             { value: 'apply', label: '✅ Apply all changes to disk' },
             { value: 'reject', label: '❌ Reject and discard changes' },
