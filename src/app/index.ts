@@ -1,6 +1,7 @@
 import { Command } from 'commander';
 import * as p from '@clack/prompts';
-import { colors, banner } from './ui/theme.js';
+import { colors } from './ui/theme.js';
+import { pixelBanner } from './lib/pixel-banner.js';
 import { authCommand } from './commands/auth.js';
 import { gitCommand } from './commands/git.js';
 import { isUserLoggedIn, ensureAuthenticated } from './lib/auth.js';
@@ -23,7 +24,7 @@ program.addCommand(gitCommand);
 
 async function startInteractiveSession() {
     console.clear();
-    console.log(banner('Rool Dev CLI', 'Interactive Workspace & Automation Shell'));
+    console.log(pixelBanner('Rool Dev CLI', 'Interactive Workspace & Automation Shell'));
 
     // 1. Always verify / select active workspace first
     await promptOrConfirmWorkspace();
@@ -46,7 +47,7 @@ async function startInteractiveSession() {
         const action = await p.select({
             message: 'Choose an action:',
             options: [
-                { value: 'ai-prompt', label: '🧠 Ask Rool Agent (Code modification, tasks, questions)' },
+                { value: 'ai-prompt', label: '🧠 Ask Rool (Code modification, tasks, questions)' },
                 { value: 'ai-review', label: '🔍 AI Code Review (Inspect current diff & changes)' },
                 { value: 'ai-commit', label: '📝 AI Smart Commit (Analyze diff & generate commit)' },
                 { value: 'git-status', label: '📊 Inspect Local Git Status' },
