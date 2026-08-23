@@ -7,7 +7,7 @@ import { gitCommand } from './commands/git.js';
 import { isUserLoggedIn, ensureAuthenticated } from './lib/auth.js';
 import { getRepoStatus, getCurrentBranch, checkGitRepo } from './lib/git.js';
 import { promptOrConfirmWorkspace } from './lib/workspace.js';
-import { runAgentTask, manageConversations, startNewConversation } from './lib/rool-agent.js';
+import { runAgentTask, manageConversations, startNewConversation, getStoredConversationId } from './lib/rool-agent.js';
 import { reviewCurrentChanges, generateSmartCommit } from './lib/git-ai.js';
 import { collectContextForPrompt, formatContextPayload } from './lib/context.js';
 import { extractFileChanges, promptAndApplyChanges } from './lib/patcher.js';
@@ -22,16 +22,49 @@ program
 program.addCommand(authCommand);
 program.addCommand(gitCommand);
 
+/**
+ * Ask the user how to handle the conversation session if one was cached
+ * from a previous run. Lets them resume it, pick another, or start fresh.
+ */
+async function offerSessionResume(): Promise<void> {
+    // Nothing cached to resume -> just start a fresh loop.
+    if (!getStoredConversationId()) return;
+
+    const choice = await p.select({
+        message: 'A previous session was found. What would you like to do?',
+        options: [
+            { value: 'resume', label: '▶️  Resume the last used session' },
+            { value: 'select', label: '🧭 Pick a different session' },
+            { value: 'new', label: '🔄 Start a new session (clear memory)' },
+        ],
+    });
+
+    if (p.isCancel(choice)) return;
+
+    if (choice === 'resume') {
+        p.log.success('OK — resuming the last used session.');
+    } else if (choice === 'new') {
+        startNewConversation();
+    } else if (choice === 'select') {
+        try {
+            await manageConversations();
+        } catch (e: any) {
+            p.log.error(e.message);
+        }
+    }
+}
+
 async function startInteractiveSession() {
     console.clear();
-    // Leading lowercase "r" renders as the lowercase pixel glyph; the rest
-    // of the wordmark falls back to uppercase → reads "Rool Dev CLI".
     console.log(pixelBanner('rool dev cli', 'Interactive Workspace & Automation Shell'));
 
     // 1. Always verify / select active workspace first
     await promptOrConfirmWorkspace();
 
-    // 2. Main interactive loop
+    // 2. Offer to resume / select / clear any previously stored session
+    await offerSessionResume();
+
+    // 3. Main interactive loop
     while (true) {
         const loggedIn = await isUserLoggedIn();
         const branch = await getCurrentBranch().catch(() => 'unknown');
@@ -49,7 +82,7 @@ async function startInteractiveSession() {
         const action = await p.select({
             message: 'Choose an action:',
             options: [
-                { value: 'ai-prompt', label: '🧠 Ask Rool Agent (Code modification, tasks, questions)' },
+                { value: 'ai-prompt', label: '🧠 Ask Rool (Code modification, tasks, questions)' },
                 { value: 'ai-review', label: '🔍 AI Code Review (Inspect current diff & changes)' },
                 { value: 'ai-commit', label: '📝 AI Smart Commit (Analyze diff & generate commit)' },
                 { value: 'git-status', label: '📊 Inspect Local Git Status' },
@@ -73,7 +106,6 @@ async function startInteractiveSession() {
                 break;
             }
 
-            // 2. Recommend auth early, since it's the common blocker.
             case 'session-manage': {
                 try {
                     await manageConversations();
