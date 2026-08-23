@@ -10,10 +10,11 @@ export async function reviewCurrentChanges(): Promise<string> {
         return 'No changes detected in working tree to review.';
     }
 
-    return await runAgentTask(
+    const { text } = await runAgentTask(
         'Please review this Git diff for bugs, performance issues, security concerns, and style improvements:',
         diff
     );
+    return text;
 }
 
 /**
@@ -27,8 +28,9 @@ export async function generateSmartCommit(): Promise<string> {
         throw new Error('No changes found to create a commit for.');
     }
 
-    return await runAgentTask(
+    const { text } = await runAgentTask(
         'Write a concise, standard Conventional Commit message (e.g. feat:, fix:, refactor:) based on these changes. Only return the commit message.',
         workingDiff
     );
+    return text;
 }

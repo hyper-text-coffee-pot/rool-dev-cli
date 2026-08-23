@@ -33,51 +33,60 @@ export interface ProposedFileChange {
 
 /**
  * Extracts proposed file modifications from the agent's response text.
+ * `fileTagNonce` must match the one-time nonce given to the model for this request
+ * (see runAgentTask) — without it, structured <<<FILE>>> blocks are never trusted,
+ * since a nonce-less tag could just be the model echoing generic instructions/example
+ * text that happens to live inside a file it's editing (e.g. this CLI's own source).
  */
-export function extractFileChanges(responseText: string, rootDir = process.cwd()): ProposedFileChange[] {
+export function extractFileChanges(responseText: string, rootDir = process.cwd(), fileTagNonce?: string): ProposedFileChange[] {
     const changes: ProposedFileChange[] = [];
     const processedPaths = new Set<string>();
 
     // Clean Windows and carriage returns first
     const normalizedResponse = responseText.replace(/\r\n/g, '\n');
 
-    // Pattern 1: Structured <<<FILE: path>>> ... <<<END_FILE>>> (or EOF)
-    const structuredRegex = /<<<FILE:\s*([^\n\r>]+)>>>\s*([\s\S]*?)(<<<END_FILE>>>|$)/gi;
-    let match: RegExpExecArray | null;
+    // Pattern 1: Structured <<<FILE:{nonce}: path>>> ... <<<END_FILE:{nonce}>>> (or EOF)
+    if (fileTagNonce) {
+        const nonce = fileTagNonce.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const closeTag = `<<<END_FILE:${nonce}>>>`;
+        const structuredRegex = new RegExp(`<<<FILE:${nonce}:\\s*([^\\n\\r>]+)>>>\\s*([\\s\\S]*?)(${closeTag}|$)`, 'gi');
+        let match: RegExpExecArray | null;
 
-    while ((match = structuredRegex.exec(normalizedResponse)) !== null) {
-        const rawPath = match[1].trim().replace(/\\/g, '/');
-        let content = match[2];
-        const isTruncated = match[3] !== '<<<END_FILE>>>';
-        if (!rawPath || processedPaths.has(rawPath.toLowerCase())) continue;
-        if (!isPlausibleTargetPath(rawPath, rootDir)) continue;
+        while ((match = structuredRegex.exec(normalizedResponse)) !== null) {
+            const rawPath = match[1].trim().replace(/\\/g, '/');
+            let content = match[2];
+            const isTruncated = match[3] !== closeTag;
+            if (!rawPath || processedPaths.has(rawPath.toLowerCase())) continue;
+            if (!isPlausibleTargetPath(rawPath, rootDir)) continue;
 
-        // Strip unclosed tags or trailing delimiters
-        content = content.replace(/<<<END_FILE>>>/gi, '').trimEnd() + '\n';
+            // Strip unclosed tags or trailing delimiters
+            content = content.replace(new RegExp(closeTag, 'gi'), '').trimEnd() + '\n';
 
-        const absolutePath = normalize(resolve(rootDir, rawPath));
-        const isNew = !existsSync(absolutePath);
-        let oldContent = '';
-        if (!isNew) {
-            try {
-                oldContent = readFileSync(absolutePath, 'utf-8').replace(/\r\n/g, '\n');
-            } catch { }
+            const absolutePath = normalize(resolve(rootDir, rawPath));
+            const isNew = !existsSync(absolutePath);
+            let oldContent = '';
+            if (!isNew) {
+                try {
+                    oldContent = readFileSync(absolutePath, 'utf-8').replace(/\r\n/g, '\n');
+                } catch { }
+            }
+
+            processedPaths.add(rawPath.toLowerCase());
+            changes.push({
+                relativePath: rawPath,
+                absolutePath,
+                isNew,
+                oldContent,
+                newContent: content,
+                isTruncated,
+            });
         }
-
-        processedPaths.add(rawPath.toLowerCase());
-        changes.push({
-            relativePath: rawPath,
-            absolutePath,
-            isNew,
-            oldContent,
-            newContent: content,
-            isTruncated,
-        });
     }
 
     // Pattern 2: Fallback for markdown codeblocks with filename header
     if (changes.length === 0) {
         const mdFileRegex = /(?:###?\s*File:\s*|`)([a-zA-Z0-9_\-\.\/]+\.[a-zA-Z0-9]{1,6})`?\s*\n+```[a-zA-Z]*\n([\s\S]*?)```/gi;
+        let match: RegExpExecArray | null;
         while ((match = mdFileRegex.exec(normalizedResponse)) !== null) {
             const rawPath = match[1].trim().replace(/\\/g, '/');
             const content = match[2].trimEnd() + '\n';

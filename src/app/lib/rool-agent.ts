@@ -1,4 +1,5 @@
 import * as p from '@clack/prompts';
+import { randomUUID } from 'node:crypto';
 import { RoolClient } from '@rool-dev/sdk';
 import type { MachineRunEvent, MachineConversation } from '@rool-dev/sdk';
 import { ensureAuthenticated } from './auth.js';
@@ -23,19 +24,18 @@ Mode behavior:
 - If ACTIVE MODE is "plan": Provide a step-by-step implementation plan, file-by-file
   outline of what changes are needed, trade-offs, ordering. Do NOT use the file-writing tag format described below.
 - If ACTIVE MODE is "write": You MAY modify, add features, fix bugs, or create files,
-  using the file-writing tag format described below.
-
-File-writing tag format (ONLY use this in "write" mode, and ONLY for real files you intend to change):
-<<<FILE: relative/path/to/file.ts>>>
-(full file contents here)
-<<<END_FILE>>>
+  using the one-time file-writing tag format given to you separately in the
+  "[FILE WRITE FORMAT]" section of this request. That format is randomly generated
+  per request specifically so it cannot collide with tag-like text that may already
+  exist inside a file you are editing (for example, this very prompt's own
+  instructions, if you are asked to modify this CLI's own source code).
 
 Rules:
-- Always output the FULL updated file contents between the FILE tags so the CLI can reliably write it to disk.
-- You MUST close every file block with a literal <<<END_FILE>>> tag on its own line. A file block without <<<END_FILE>>> is treated as truncated and will be discarded, never written to disk.
-- Never use the FILE tag format to illustrate, quote, or explain these instructions — only emit it immediately before real, complete file contents you want written to disk.
+- Always output the FULL updated file contents wrapped exactly as instructed in "[FILE WRITE FORMAT]".
+- Never fabricate your own tag syntax, and never reuse a tag from a previous turn — always use
+  the exact one-time tags supplied in the current request's "[FILE WRITE FORMAT]" section.
 - If a file is large, still emit the complete contents — do not summarize, abbreviate, or use "// ... unchanged" placeholders.
-- If multiple files need changes or new files need to be created, output multiple FILE blocks.
+- If multiple files need changes or new files need to be created, wrap each one separately using the same one-time tags.
 - Output clean, modern code matching the user's TypeScript / ESM architecture.
 `.trim();
 
@@ -285,7 +285,7 @@ export async function runAgentTask(
     promptText: string,
     contextPayload?: string,
     options?: { mode?: 'agent' | 'ask' | 'plan' },
-): Promise<string> {
+): Promise<{ text: string; fileTagNonce: string }> {
     const client = await ensureAuthenticated();
     const machineId = await getActiveMachine(client);
     const machine = client.machine(machineId);
@@ -299,11 +299,26 @@ export async function runAgentTask(
     const projectOverview = await getProjectOverview();
     const activeMode = options?.mode === 'agent' ? 'write' : (options?.mode ?? 'write');
 
+    // Generated fresh per request so it can never collide with tag-like text that
+    // already exists inside a file being edited (e.g. this file's own instructions).
+    const fileTagNonce = randomUUID().slice(0, 8);
+    const fileWriteFormat = activeMode === 'write'
+        ? [
+            `[FILE WRITE FORMAT]`,
+            `Wrap each complete, updated file EXACTLY like this, using this one-time tag (only valid for this request):`,
+            `<<<FILE:${fileTagNonce}: relative/path/to/file.ts>>>`,
+            `(full file contents here)`,
+            `<<<END_FILE:${fileTagNonce}>>>`,
+            `You MUST close every block with the exact <<<END_FILE:${fileTagNonce}>>> tag on its own line — a block missing it is treated as truncated and discarded, never written to disk.`,
+        ].join('\n')
+        : '';
+
     const formattedPrompt = [
         `[System Instructions]`,
         AGENT_SYSTEM_PROMPT,
         `\n[ACTIVE MODE]`,
         activeMode,
+        fileWriteFormat ? `\n${fileWriteFormat}` : '',
         `\n[Project Architecture & File Tree]`,
         projectOverview,
         `\n[User Task]`,
@@ -378,5 +393,5 @@ export async function runAgentTask(
     } catch { }
 
     console.log('\n');
-    return completeResponse;
+    return { text: completeResponse, fileTagNonce };
 }

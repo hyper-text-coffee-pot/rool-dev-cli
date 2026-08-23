@@ -172,11 +172,11 @@ async function startInteractiveSession() {
                     const formattedContext = formatContextPayload(liveFiles);
 
                     // 5. Stream agent reply (passes mode to the agent)
-                    const fullResponse = await runAgentTask(cleanPrompt, formattedContext, { mode });
+                    const { text: fullResponse, fileTagNonce } = await runAgentTask(cleanPrompt, formattedContext, { mode });
 
                     // 6. Only attempt file edits if in 'agent' (write) mode
                     if (mode === 'agent') {
-                        const changes = extractFileChanges(fullResponse);
+                        const changes = extractFileChanges(fullResponse, process.cwd(), fileTagNonce);
                         if (changes.length > 0) {
                             await promptAndApplyChanges(changes);
                         } else {
