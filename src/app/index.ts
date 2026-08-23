@@ -7,7 +7,7 @@ import { gitCommand } from './commands/git.js';
 import { isUserLoggedIn, ensureAuthenticated } from './lib/auth.js';
 import { getRepoStatus, getCurrentBranch, checkGitRepo } from './lib/git.js';
 import { promptOrConfirmWorkspace } from './lib/workspace.js';
-import { runAgentTask } from './lib/rool-agent.js';
+import { runAgentTask, manageConversations, startNewConversation } from './lib/rool-agent.js';
 import { reviewCurrentChanges, generateSmartCommit } from './lib/git-ai.js';
 import { collectContextForPrompt, formatContextPayload } from './lib/context.js';
 import { extractFileChanges, promptAndApplyChanges } from './lib/patcher.js';
@@ -24,6 +24,8 @@ program.addCommand(gitCommand);
 
 async function startInteractiveSession() {
     console.clear();
+    // Leading lowercase "r" renders as the lowercase pixel glyph; the rest
+    // of the wordmark falls back to uppercase → reads "Rool Dev CLI".
     console.log(pixelBanner('rool dev cli', 'Interactive Workspace & Automation Shell'));
 
     // 1. Always verify / select active workspace first
@@ -51,6 +53,7 @@ async function startInteractiveSession() {
                 { value: 'ai-review', label: '🔍 AI Code Review (Inspect current diff & changes)' },
                 { value: 'ai-commit', label: '📝 AI Smart Commit (Analyze diff & generate commit)' },
                 { value: 'git-status', label: '📊 Inspect Local Git Status' },
+                { value: 'session-manage', label: '🧭 Resume / Select a conversation session' },
                 { value: 'new-chat', label: '🔄 New Conversation (Clear Memory)' },
                 { value: 'switch-workspace', label: '📂 Switch Active Folder / Repository' },
                 { value: 'rool-machines', label: '🤖 List Rool Machines' },
@@ -70,10 +73,25 @@ async function startInteractiveSession() {
                 break;
             }
 
+            // 2. Recommend auth early, since it's the common blocker.
+            case 'session-manage': {
+                try {
+                    await manageConversations();
+                } catch (e: any) {
+                    p.log.error(e.message);
+                }
+                break;
+            }
+
+            case 'new-chat': {
+                startNewConversation();
+                break;
+            }
+
             case 'ai-prompt': {
                 const promptInput = await p.text({
                     message: 'What would you like Rool Agent to do?',
-                    placeholder: 'e.g. Add a neat logo to the banner',
+                    placeholder: 'e.g. Add a neat text logo to index.ts',
                 });
                 if (p.isCancel(promptInput) || !promptInput) break;
 
