@@ -8,6 +8,7 @@
         "skipLibCheck": true,
         "rootDir": "./src/app",
         "outDir": "./dist",
+        "types": ["node"],
         "paths": {
             "@app/*": ["./src/app/*"]
         }

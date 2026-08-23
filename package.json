@@ -10,7 +10,7 @@
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
-    "start": "node dist/app/index.js"
+    "start": "node dist/index.js"
   },
   "keywords": [],
   "author": "Protocol Companies LLC",
