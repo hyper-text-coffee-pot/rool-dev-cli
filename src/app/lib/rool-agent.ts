@@ -5,6 +5,21 @@ import { ensureAuthenticated } from './auth.js';
 import { store } from '../config.js';
 import { colors } from '../ui/theme.js';
 
+export const AGENT_SYSTEM_PROMPT = `
+You are an expert AI software engineer operating as the backend engine for a Developer CLI.
+When the user asks you to modify code, add features, fix bugs, or create new files, you MUST provide the complete, updated file content wrapped in this exact format:
+
+<<<FILE: relative/path/to/file.ext>>>
+// full updated file content here
+<<<END_FILE>>>
+
+Rules:
+1. Always output the FULL updated file contents between the <<<FILE: ...>>> tags so the CLI can reliably write it to disk.
+2. If multiple files need changes or new files need to be created, output multiple <<<FILE: ...>>> blocks.
+3. Before or after the file blocks, provide a concise summary explaining what you changed and why.
+4. Maintain existing code style, imports, and architecture.
+`.trim();
+
 /**
  * Prompt user to select an active Rool Machine, caching the selection.
  */
@@ -47,9 +62,9 @@ export async function runAgentTask(promptText: string, contextPayload?: string):
 
     // 1. Get or list agents on the machine
     const agents = await machine.agents.list();
-    const agent = agents.length > 0 ? agents[0] : await machine.agents.create('assistant', {
-        system: 'You are a software engineering assistant helping the user develop applications via CLI.'
-    });
+    const agent = agents.length > 0
+        ? agents[0]
+        : await machine.agents.create('assistant', { system: AGENT_SYSTEM_PROMPT });
 
     // 2. Create a conversation
     const conversation = await agent.createConversation({
@@ -57,14 +72,19 @@ export async function runAgentTask(promptText: string, contextPayload?: string):
         visibility: 'private',
     });
 
-    const fullPrompt = contextPayload
-        ? `${promptText}\n\n\`\`\`\n${contextPayload}\n\`\`\``
-        : promptText;
+    // 3. Assemble prompt with instructions, context, and user request
+    const formattedPrompt = [
+        `[System Instructions]`,
+        AGENT_SYSTEM_PROMPT,
+        `\n[User Task]`,
+        promptText,
+        contextPayload ? `\n[Workspace Code Context]\n${contextPayload}` : '',
+    ].filter(Boolean).join('\n\n');
 
-    // 3. Send prompt
-    await conversation.prompt(fullPrompt);
+    // 4. Send prompt
+    await conversation.prompt(formattedPrompt);
 
-    // 4. Stream response to terminal
+    // 5. Stream response to terminal
     let completeResponse = '';
     const s = p.spinner();
     s.start(colors.primary('Rool Mind thinking...'));
@@ -83,6 +103,6 @@ export async function runAgentTask(promptText: string, contextPayload?: string):
         },
     });
 
-    console.log('\n'); // newline after streaming finishes
+    console.log('\n');
     return completeResponse;
 }

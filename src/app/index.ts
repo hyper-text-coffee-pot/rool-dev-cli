@@ -9,6 +9,7 @@ import { promptOrConfirmWorkspace } from './lib/workspace.js';
 import { runAgentTask } from './lib/rool-agent.js';
 import { reviewCurrentChanges, generateSmartCommit } from './lib/git-ai.js';
 import { collectContextForPrompt, formatContextPayload } from './lib/context.js';
+import { extractFileChanges, promptAndApplyChanges } from './lib/patcher.js';
 
 const program = new Command();
 
@@ -70,17 +71,23 @@ async function startInteractiveSession() {
             case 'ai-prompt': {
                 const promptInput = await p.text({
                     message: 'What would you like Rool Agent to do?',
-                    placeholder: 'e.g. Help me understand index.ts or refactor @src/app/auth.ts',
+                    placeholder: 'e.g. Add a neat text logo to index.ts',
                 });
                 if (p.isCancel(promptInput) || !promptInput) break;
 
                 try {
-                    // 1. Automatically collect referenced local files (via regex and/or @mentions)
+                    // 1. Scan repo & gather relevant files
                     const context = await collectContextForPrompt(promptInput as string);
                     const formattedContext = formatContextPayload(context.files);
 
-                    // 2. Send both user prompt and local code context to Rool Agent
-                    await runAgentTask(promptInput as string, formattedContext);
+                    // 2. Stream agent thinking & reply
+                    const fullResponse = await runAgentTask(promptInput as string, formattedContext);
+
+                    // 3. Extract any proposed file edits and prompt user to apply
+                    const changes = extractFileChanges(fullResponse);
+                    if (changes.length > 0) {
+                        await promptAndApplyChanges(changes);
+                    }
                 } catch (e: any) {
                     p.log.error(e.message);
                 }
