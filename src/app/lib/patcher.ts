@@ -1,8 +1,25 @@
 import { writeFileSync, existsSync, readFileSync, mkdirSync } from 'node:fs';
-import { resolve, dirname, normalize } from 'node:path';
+import { resolve, dirname, normalize, relative, isAbsolute } from 'node:path';
 import * as diff from 'diff';
 import * as p from '@clack/prompts';
 import { colors } from '../ui/theme.js';
+
+/**
+ * Rejects placeholder/ellipsis text (e.g. the model echoing its own "<<<FILE: ...>>>"
+ * instructions) and paths that would escape rootDir, so we never write to a bogus
+ * or arbitrary location on disk.
+ */
+function isPlausibleTargetPath(rawPath: string, rootDir: string): boolean {
+    if (!rawPath) return false;
+    // Reject paths made up of only dots/slashes/whitespace, e.g. "...", "..", "."
+    if (/^[.\/\\\s]+$/.test(rawPath)) return false;
+
+    const absolutePath = normalize(resolve(rootDir, rawPath));
+    const rel = relative(rootDir, absolutePath);
+    if (rel.startsWith('..') || isAbsolute(rel)) return false; // escapes the workspace root
+
+    return true;
+}
 
 export interface ProposedFileChange {
     relativePath: string;
@@ -10,6 +27,8 @@ export interface ProposedFileChange {
     isNew: boolean;
     oldContent: string;
     newContent: string;
+    /** True if no <<<END_FILE>>> marker was found — content may be a truncated stream, not the full file. */
+    isTruncated: boolean;
 }
 
 /**
@@ -23,13 +42,15 @@ export function extractFileChanges(responseText: string, rootDir = process.cwd()
     const normalizedResponse = responseText.replace(/\r\n/g, '\n');
 
     // Pattern 1: Structured <<<FILE: path>>> ... <<<END_FILE>>> (or EOF)
-    const structuredRegex = /<<<FILE:\s*([^\n\r>]+)>>>\s*([\s\S]*?)(?:<<<END_FILE>>>|$)/gi;
+    const structuredRegex = /<<<FILE:\s*([^\n\r>]+)>>>\s*([\s\S]*?)(<<<END_FILE>>>|$)/gi;
     let match: RegExpExecArray | null;
 
     while ((match = structuredRegex.exec(normalizedResponse)) !== null) {
         const rawPath = match[1].trim().replace(/\\/g, '/');
         let content = match[2];
+        const isTruncated = match[3] !== '<<<END_FILE>>>';
         if (!rawPath || processedPaths.has(rawPath.toLowerCase())) continue;
+        if (!isPlausibleTargetPath(rawPath, rootDir)) continue;
 
         // Strip unclosed tags or trailing delimiters
         content = content.replace(/<<<END_FILE>>>/gi, '').trimEnd() + '\n';
@@ -50,6 +71,7 @@ export function extractFileChanges(responseText: string, rootDir = process.cwd()
             isNew,
             oldContent,
             newContent: content,
+            isTruncated,
         });
     }
 
@@ -60,6 +82,7 @@ export function extractFileChanges(responseText: string, rootDir = process.cwd()
             const rawPath = match[1].trim().replace(/\\/g, '/');
             const content = match[2].trimEnd() + '\n';
             if (processedPaths.has(rawPath.toLowerCase())) continue;
+            if (!isPlausibleTargetPath(rawPath, rootDir)) continue;
 
             const absolutePath = normalize(resolve(rootDir, rawPath));
             const isNew = !existsSync(absolutePath);
@@ -77,6 +100,7 @@ export function extractFileChanges(responseText: string, rootDir = process.cwd()
                 isNew,
                 oldContent,
                 newContent: content,
+                isTruncated: false,
             });
         }
     }
@@ -93,6 +117,9 @@ export function displayDiffPreview(change: ProposedFileChange): void {
         : colors.primary(`[MODIFIED] ${change.relativePath}`);
 
     console.log('\n' + colors.bold(header));
+    if (change.isTruncated) {
+        console.log(colors.error(`⚠ No <<<END_FILE>>> marker found — this content looks like a truncated/cut-off stream, not a complete file. It will be skipped.`));
+    }
 
     const patch = diff.createPatch(
         change.relativePath,
@@ -128,6 +155,20 @@ export async function promptAndApplyChanges(changes: ProposedFileChange[]): Prom
         displayDiffPreview(change);
     }
 
+    // Never allow truncated/incomplete blocks to reach disk, even if the user says "apply".
+    const safeChanges = changes.filter((c) => !c.isTruncated);
+    const truncatedChanges = changes.filter((c) => c.isTruncated);
+    if (truncatedChanges.length > 0) {
+        p.log.warn(colors.error(
+            `Skipping ${truncatedChanges.length} truncated file(s) (no <<<END_FILE>>> marker): ` +
+            truncatedChanges.map((c) => c.relativePath).join(', '),
+        ));
+    }
+    if (safeChanges.length === 0) {
+        p.log.warn('No complete file changes to apply.');
+        return false;
+    }
+
     const action = await p.select({
         message: 'Apply these changes to your local files?',
         options: [
@@ -145,7 +186,7 @@ export async function promptAndApplyChanges(changes: ProposedFileChange[]): Prom
     s.start('Writing changes to disk...');
 
     try {
-        for (const change of changes) {
+        for (const change of safeChanges) {
             const dir = dirname(change.absolutePath);
             if (!existsSync(dir)) {
                 mkdirSync(dir, { recursive: true });
@@ -153,7 +194,7 @@ export async function promptAndApplyChanges(changes: ProposedFileChange[]): Prom
             writeFileSync(change.absolutePath, change.newContent, 'utf-8');
             p.log.success(`Wrote: ${colors.accent(change.relativePath)} -> ${colors.muted(change.absolutePath)}`);
         }
-        s.stop(colors.success(`Successfully applied ${changes.length} file update(s)!`));
+        s.stop(colors.success(`Successfully applied ${safeChanges.length} file update(s)!`));
         return true;
     } catch (err: any) {
         s.stop(colors.error('Failed to write changes to disk.'));

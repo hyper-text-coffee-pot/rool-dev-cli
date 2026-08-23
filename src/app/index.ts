@@ -133,26 +133,35 @@ async function startInteractiveSession() {
             case 'ai-prompt': {
                 const promptInput = await p.text({
                     message: 'What would you like Rool Agent to do?',
-                    placeholder: 'e.g. Add a neat text logo to index.ts, or @src/app/ui/theme.ts ...',
+                    placeholder: 'agent: <make changes> | ask: <question> | plan: <steps> (or @file/folder)',
                 });
                 if (p.isCancel(promptInput) || !promptInput) break;
 
+                // --- Mode Detection (defaults to 'agent' / write mode) ---
+                let mode: 'agent' | 'ask' | 'plan' = 'agent';
+                let rawText = (promptInput as string).trim();
+                const modeMatch = rawText.match(/^(agent|ask|plan):/i);
+                if (modeMatch) {
+                    mode = modeMatch[1].toLowerCase() as 'agent' | 'ask' | 'plan';
+                    rawText = rawText.slice(modeMatch[0].length).trim();
+                }
+
                 try {
-                    // 1. Expand explicit @-references (rooms + folders) with FRESH content
-                    const { prompt: cleanPrompt, files: atFiles } = await expandAtReferences(promptInput as string);
+                    // 1. Expand explicit @-references (files + folders) with FRESH content
+                    const { prompt: cleanPrompt, files: atFiles } = await expandAtReferences(rawText);
 
                     // 2. Scan remaining free-text mentions for other relevant files
                     const detection = await collectContextForPrompt(cleanPrompt);
                     const indexedFiles = detection.files ?? [];
 
-                    // 3. Merge, giving precedence to explicit @-references + always re-reading disk
-                    const merged = [
-                        ...atFiles.map((f) => ({ path: f.path, content: f.content })),
-                        ...indexedFiles
-                    ];
+                    // 3. Deduplicate and merge files
+                    const mergedMap = new Map<string, { path: string; content: string }>();
+                    for (const f of [...indexedFiles, ...atFiles]) {
+                        mergedMap.set(f.path, f);
+                    }
 
-                    // 4. Force-reload every file to guarantee LIVE content
-                    const liveFiles = merged.map((f) => {
+                    // 4. Force-reload every file to guarantee LIVE on-disk content
+                    const liveFiles = Array.from(mergedMap.values()).map((f) => {
                         const abs = resolve(process.cwd(), f.path);
                         try {
                             return { path: f.path, content: readFileSync(abs, 'utf-8') };
@@ -162,13 +171,19 @@ async function startInteractiveSession() {
                     });
                     const formattedContext = formatContextPayload(liveFiles);
 
-                    // 5. Stream agent reply
-                    const fullResponse = await runAgentTask(cleanPrompt, formattedContext);
+                    // 5. Stream agent reply (passes mode to the agent)
+                    const fullResponse = await runAgentTask(cleanPrompt, formattedContext, { mode });
 
-                    // 6. Apply file edits
-                    const changes = extractFileChanges(fullResponse);
-                    if (changes.length > 0) {
-                        await promptAndApplyChanges(changes);
+                    // 6. Only attempt file edits if in 'agent' (write) mode
+                    if (mode === 'agent') {
+                        const changes = extractFileChanges(fullResponse);
+                        if (changes.length > 0) {
+                            await promptAndApplyChanges(changes);
+                        } else {
+                            p.log.info(colors.muted('No file modifications were proposed in this response.'));
+                        }
+                    } else {
+                        p.log.info(colors.muted(`[${mode.toUpperCase()} mode] Completed without disk modifications.`));
                     }
                 } catch (e: any) {
                     p.log.error(e.message);

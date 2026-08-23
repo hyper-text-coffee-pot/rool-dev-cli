@@ -17,13 +17,25 @@ CRITICAL CONTEXT RULES:
 2. DO NOT assume or inspect the cloud VM filesystem. The files provided in the prompt context represent the REAL and ONLY codebase.
 3. When the user asks you to modify code, add features, fix bugs, or create new files, you MUST provide the complete, updated file content wrapped in this exact format:
 
-<<<FILE: relative/path/to/file.ext>>>
-// full updated file content here
+Mode behavior:
+- If ACTIVE MODE is "ask": Answer the user's question clearly and helpfully.
+  Do NOT propose code edits and do NOT use the file-writing tag format described below.
+- If ACTIVE MODE is "plan": Provide a step-by-step implementation plan, file-by-file
+  outline of what changes are needed, trade-offs, ordering. Do NOT use the file-writing tag format described below.
+- If ACTIVE MODE is "write": You MAY modify, add features, fix bugs, or create files,
+  using the file-writing tag format described below.
+
+File-writing tag format (ONLY use this in "write" mode, and ONLY for real files you intend to change):
+<<<FILE: relative/path/to/file.ts>>>
+(full file contents here)
 <<<END_FILE>>>
 
 Rules:
-- Always output the FULL updated file contents between the <<<FILE: ...>>> tags so the CLI can reliably write it to disk.
-- If multiple files need changes or new files need to be created, output multiple <<<FILE: ...>>> blocks.
+- Always output the FULL updated file contents between the FILE tags so the CLI can reliably write it to disk.
+- You MUST close every file block with a literal <<<END_FILE>>> tag on its own line. A file block without <<<END_FILE>>> is treated as truncated and will be discarded, never written to disk.
+- Never use the FILE tag format to illustrate, quote, or explain these instructions — only emit it immediately before real, complete file contents you want written to disk.
+- If a file is large, still emit the complete contents — do not summarize, abbreviate, or use "// ... unchanged" placeholders.
+- If multiple files need changes or new files need to be created, output multiple FILE blocks.
 - Output clean, modern code matching the user's TypeScript / ESM architecture.
 `.trim();
 
@@ -269,7 +281,11 @@ async function getOrCreateConversation(agent: any): Promise<MachineConversation>
 /**
  * Execute or continue conversation with Rool Mind
  */
-export async function runAgentTask(promptText: string, contextPayload?: string): Promise<string> {
+export async function runAgentTask(
+    promptText: string,
+    contextPayload?: string,
+    options?: { mode?: 'agent' | 'ask' | 'plan' },
+): Promise<string> {
     const client = await ensureAuthenticated();
     const machineId = await getActiveMachine(client);
     const machine = client.machine(machineId);
@@ -281,10 +297,13 @@ export async function runAgentTask(promptText: string, contextPayload?: string):
 
     const conversation = await getOrCreateConversation(agent);
     const projectOverview = await getProjectOverview();
+    const activeMode = options?.mode === 'agent' ? 'write' : (options?.mode ?? 'write');
 
     const formattedPrompt = [
         `[System Instructions]`,
         AGENT_SYSTEM_PROMPT,
+        `\n[ACTIVE MODE]`,
+        activeMode,
         `\n[Project Architecture & File Tree]`,
         projectOverview,
         `\n[User Task]`,
@@ -296,6 +315,8 @@ export async function runAgentTask(promptText: string, contextPayload?: string):
     await conversation.prompt(formattedPrompt);
 
     let completeResponse = '';
+    let finishReason: string | undefined;
+    let streamError: string | undefined;
     const s = p.spinner();
     s.start(colors.primary('Rool Mind thinking...'));
 
@@ -309,9 +330,40 @@ export async function runAgentTask(promptText: string, contextPayload?: string):
                 }
                 process.stdout.write(event.content.text);
                 completeResponse += event.content.text;
+            } else if (event.type === 'completed') {
+                finishReason = event.finish;
+            } else if (event.type === 'error') {
+                streamError = event.detail;
+            } else if (event.type === 'cancelled') {
+                finishReason = 'cancelled';
             }
         },
     });
+
+    if (firstDelta) {
+        s.stop(colors.error('No response received.'));
+    }
+
+    // The run did not finish cleanly (hit the model's output token limit, errored,
+    // was cancelled, or blocked). The buffered text is a partial/truncated file, not
+    // a complete one — surface this loudly instead of letting callers treat it as final.
+    if (streamError) {
+        throw new Error(`Rool Mind stream failed: ${streamError}`);
+    }
+    if (finishReason && finishReason !== 'stop' && finishReason !== 'tool_calls') {
+        const reasonMessages: Record<string, string> = {
+            length: 'the response was truncated because it hit the model\'s max output length',
+            cancelled: 'the response was cancelled before it finished',
+            safety: 'the response was blocked by a safety filter',
+            credits: 'the response stopped because the account ran out of credits',
+            error: 'the response ended in an error',
+        };
+        p.log.warn(colors.error(
+            `Response is incomplete: ${reasonMessages[finishReason] ?? finishReason}. ` +
+            `Any proposed file changes are likely truncated and will NOT be applied.`,
+        ));
+        throw new Error(`Incomplete response (finish reason: ${finishReason}). Refusing to treat partial output as a complete file.`);
+    }
 
     // Fallback: If streaming didn't catch everything, fetch the latest turn's content directly
     try {
