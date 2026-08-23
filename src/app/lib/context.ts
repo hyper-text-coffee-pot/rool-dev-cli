@@ -156,3 +156,29 @@ export function formatContextPayload(files: Array<{ path: string; content: strin
         })
         .join('\n\n');
 }
+
+/**
+ * Generates a lightweight summary of project structure and dependencies.
+ */
+export async function getProjectOverview(rootDir = process.cwd()): Promise<string> {
+    const files = await fg('**/*', {
+        cwd: rootDir,
+        ignore: IGNORE_PATTERNS,
+        onlyFiles: true,
+    });
+
+    const packageJsonPath = resolve(rootDir, 'package.json');
+    let pkgSummary = '';
+    if (existsSync(packageJsonPath)) {
+        try {
+            const pkg = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
+            pkgSummary = `Project: ${pkg.name || 'unnamed'} (${pkg.type || 'commonjs'}) | Deps: ${Object.keys(pkg.dependencies || {}).join(', ')}`;
+        } catch { }
+    }
+
+    return [
+        `Project Info: ${pkgSummary}`,
+        `Repository Tree:\n${files.map((f) => `  - ${f}`).slice(0, 50).join('\n')}`,
+    ].join('\n');
+}
+
