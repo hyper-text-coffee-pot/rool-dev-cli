@@ -1,6 +1,6 @@
 import fg from 'fast-glob';
 import { readFileSync, existsSync, statSync } from 'node:fs';
-import { resolve, relative, basename } from 'node:path';
+import { resolve, relative, basename, isAbsolute } from 'node:path';
 import { colors } from '../ui/theme.js';
 import * as p from '@clack/prompts';
 import { git, checkGitRepo } from './git.js';
@@ -182,3 +182,49 @@ export async function getProjectOverview(rootDir = process.cwd()): Promise<strin
     ].join('\n');
 }
 
+/**
+ * Parse `@`-prefixed file/folder references from a prompt and always
+ * load the CURRENT on-disk contents so the agent operates on live state.
+ */
+export async function expandAtReferences(
+    promptText: string
+): Promise<{ prompt: string; files: Array<{ path: string; content: string }> }> {
+    const atPattern = /@((?:\\.|[^\s@])+)/g;
+    const matches = [...promptText.matchAll(atPattern)];
+    if (matches.length === 0) return { prompt: promptText, files: [] };
+
+    const cwd = process.cwd();
+    const files: Array<{ path: string; content: string }> = [];
+    const referenced = new Set<string>();
+
+    for (const m of matches) {
+        const rawRef = m[1];
+        const absPath = isAbsolute(rawRef)
+            ? rawRef
+            : resolve(cwd, rawRef);
+
+        let isDir = false;
+        try { isDir = statSync(absPath).isDirectory(); } catch { /* skip */ }
+
+        if (isDir) {
+            const found = await fg(['**/*', '!**/node_modules/**', '!**/.git/**', '!**/dist/**'], { cwd: absPath });
+            for (const rel of found) {
+                const full = resolve(absPath, rel);
+                if (referenced.has(full)) continue;
+                referenced.add(full);
+                files.push({ path: relative(cwd, full).replace(/\\/g, '/'), content: readFileSync(full, 'utf-8') });
+            }
+        } else {
+            if (!referenced.has(absPath)) {
+                referenced.add(absPath);
+                try {
+                    files.push({ path: rawRef.replace(/\\/g, '/'), content: readFileSync(absPath, 'utf-8') });
+                } catch { }
+            }
+        }
+    }
+
+    // Strip the @-refs out of the prompt so they don't trip up the AI
+    const cleanedPrompt = promptText.replace(atPattern, '').replace(/\s+/g, ' ').trim();
+    return { prompt: cleanedPrompt, files };
+}

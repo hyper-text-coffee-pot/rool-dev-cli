@@ -13,8 +13,10 @@ import {
     startNewConversation,
     getStoredConversation,
 } from './lib/rool-agent.js';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { reviewCurrentChanges, generateSmartCommit } from './lib/git-ai.js';
-import { collectContextForPrompt, formatContextPayload } from './lib/context.js';
+import { collectContextForPrompt, expandAtReferences, formatContextPayload } from './lib/context.js';
 import { extractFileChanges, promptAndApplyChanges } from './lib/patcher.js';
 
 const program = new Command();
@@ -64,7 +66,7 @@ async function offerSessionResume(): Promise<void> {
 
 async function startInteractiveSession() {
     console.clear();
-    console.log(pixelBanner('rool dev cli', 'Interactive Workspace & Automation Shell'));
+    console.log(pixelBanner('rOOL DEV CLI', 'Interactive Workspace & Automation Shell'));
 
     // 1. Always verify / select active workspace first
     await promptOrConfirmWorkspace();
@@ -131,19 +133,39 @@ async function startInteractiveSession() {
             case 'ai-prompt': {
                 const promptInput = await p.text({
                     message: 'What would you like Rool Agent to do?',
-                    placeholder: 'e.g. Add a neat text logo to index.ts',
+                    placeholder: 'e.g. Add a neat text logo to index.ts, or @src/app/ui/theme.ts ...',
                 });
                 if (p.isCancel(promptInput) || !promptInput) break;
 
                 try {
-                    // 1. Scan repo & gather relevant files
-                    const context = await collectContextForPrompt(promptInput as string);
-                    const formattedContext = formatContextPayload(context.files);
+                    // 1. Expand explicit @-references (rooms + folders) with FRESH content
+                    const { prompt: cleanPrompt, files: atFiles } = await expandAtReferences(promptInput as string);
 
-                    // 2. Stream agent thinking & reply
-                    const fullResponse = await runAgentTask(promptInput as string, formattedContext);
+                    // 2. Scan remaining free-text mentions for other relevant files
+                    const detection = await collectContextForPrompt(cleanPrompt);
+                    const indexedFiles = detection.files ?? [];
 
-                    // 3. Extract any proposed file edits and prompt user to apply
+                    // 3. Merge, giving precedence to explicit @-references + always re-reading disk
+                    const merged = [
+                        ...atFiles.map((f) => ({ path: f.path, content: f.content })),
+                        ...indexedFiles
+                    ];
+
+                    // 4. Force-reload every file to guarantee LIVE content
+                    const liveFiles = merged.map((f) => {
+                        const abs = resolve(process.cwd(), f.path);
+                        try {
+                            return { path: f.path, content: readFileSync(abs, 'utf-8') };
+                        } catch {
+                            return f;
+                        }
+                    });
+                    const formattedContext = formatContextPayload(liveFiles);
+
+                    // 5. Stream agent reply
+                    const fullResponse = await runAgentTask(cleanPrompt, formattedContext);
+
+                    // 6. Apply file edits
                     const changes = extractFileChanges(fullResponse);
                     if (changes.length > 0) {
                         await promptAndApplyChanges(changes);
