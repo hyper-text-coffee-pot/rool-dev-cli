@@ -19,7 +19,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { reviewCurrentChanges, generateSmartCommit } from './lib/git-ai.js';
 import { collectContextForPrompt, expandAtReferences, formatContextPayload } from './lib/context.js';
-import { extractFileChanges, promptAndApplyChanges } from './lib/patcher.js';
+import { extractFileChanges, promptAndApplyChanges, structuredFilesToChanges } from './lib/patcher.js';
 
 const program = new Command();
 
@@ -197,11 +197,21 @@ async function startInteractiveSession() {
                     const formattedContext = formatContextPayload(liveFiles);
 
                     // 5. Stream agent reply (passes mode to the agent)
-                    const { text: fullResponse, fileTagNonce } = await runAgentTask(cleanPrompt, formattedContext, { mode });
+                    const { text: fullResponse, fileTagNonce, structuredFiles, structuredSummary } =
+                        await runAgentTask(cleanPrompt, formattedContext, { mode });
 
                     // 6. Only attempt file edits if in 'agent' (write) mode
                     if (mode === 'agent') {
-                        const changes = extractFileChanges(fullResponse, process.cwd(), fileTagNonce);
+                        // Prefer schema-validated structured output when the backend provided it —
+                        // falls back to the text-tag parser if it didn't.
+                        const changes = structuredFiles && structuredFiles.length > 0
+                            ? structuredFilesToChanges(structuredFiles)
+                            : extractFileChanges(fullResponse, process.cwd(), fileTagNonce);
+
+                        if (structuredSummary) {
+                            p.log.message(structuredSummary);
+                        }
+
                         if (changes.length > 0) {
                             await promptAndApplyChanges(changes);
                         } else {

@@ -32,6 +32,46 @@ export interface ProposedFileChange {
 }
 
 /**
+ * Builds proposed changes directly from a model's structured (responseSchema) output,
+ * bypassing text/regex parsing entirely. Still runs paths through the same plausibility
+ * guard as the text-tag path, since the model could still return a bogus/unsafe path.
+ */
+export function structuredFilesToChanges(
+    files: { path: string; content: string }[],
+    rootDir = process.cwd(),
+): ProposedFileChange[] {
+    const changes: ProposedFileChange[] = [];
+    const processedPaths = new Set<string>();
+
+    for (const file of files) {
+        const rawPath = file.path.trim().replace(/\\/g, '/');
+        if (!rawPath || processedPaths.has(rawPath.toLowerCase())) continue;
+        if (!isPlausibleTargetPath(rawPath, rootDir)) continue;
+
+        const absolutePath = normalize(resolve(rootDir, rawPath));
+        const isNew = !existsSync(absolutePath);
+        let oldContent = '';
+        if (!isNew) {
+            try {
+                oldContent = readFileSync(absolutePath, 'utf-8').replace(/\r\n/g, '\n');
+            } catch { }
+        }
+
+        processedPaths.add(rawPath.toLowerCase());
+        changes.push({
+            relativePath: rawPath,
+            absolutePath,
+            isNew,
+            oldContent,
+            newContent: file.content.replace(/\r\n/g, '\n').trimEnd() + '\n',
+            isTruncated: false,
+        });
+    }
+
+    return changes;
+}
+
+/**
  * Extracts proposed file modifications from the agent's response text.
  * `fileTagNonce` must match the one-time nonce given to the model for this request
  * (see runAgentTask) — without it, structured <<<FILE>>> blocks are never trusted,
