@@ -1,6 +1,6 @@
 {
   "name": "rool-dev-cli",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A command line interface (CLI) tool for Rool Dev, providing developers with a streamlined way to interact with the Rool platform and manage their development workflows.",
   "main": "dist/app/index.js",
   "type": "module",

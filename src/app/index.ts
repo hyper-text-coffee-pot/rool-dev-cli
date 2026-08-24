@@ -1,3 +1,4 @@
+// Hello world! We did it!
 import { Command } from 'commander';
 import * as p from '@clack/prompts';
 import { colors, panel } from './ui/theme.js';
@@ -67,8 +68,8 @@ async function offerSessionResume(): Promise<void> {
 }
 
 /**
- * Print a short usage/credits line after an AI call completes, showing credits
- * consumed since `before` (captured at the top of this loop iteration) if available.
+ * Show a short usage/credits line after an AI call completes, showing credits
+ * used since `before` (captured at the top of this loop iteration) if available.
  */
 async function printUsageFooter(before: AccountUsage | null): Promise<void> {
     const after = await getAccountUsage();
@@ -157,7 +158,7 @@ async function startInteractiveSession() {
 
             case 'ai-prompt': {
                 const promptInput = await p.text({
-                    message: 'What would you like Rool Agent to do?',
+                    message: 'What would you like Roo to do?',
                     placeholder: 'agent: <make changes> | ask: <question> | plan: <steps> (or @file/folder)',
                 });
                 if (p.isCancel(promptInput) || !promptInput) break;

@@ -21,6 +21,27 @@ function isPlausibleTargetPath(rawPath: string, rootDir: string): boolean {
     return true;
 }
 
+/**
+ * Normalizes line endings and trailing whitespace identically for both the on-disk
+ * content and the model's proposed content, so the diff only ever shows real changes
+ * instead of spurious "no newline at end of file" noise from asymmetric normalization.
+ */
+function normalizeForDiff(content: string): string {
+    const normalized = content.replace(/\r\n/g, '\n');
+    return normalized.length === 0 ? '' : normalized.trimEnd() + '\n';
+}
+
+function readExistingFile(absolutePath: string): { isNew: boolean; oldContent: string } {
+    const isNew = !existsSync(absolutePath);
+    let oldContent = '';
+    if (!isNew) {
+        try {
+            oldContent = normalizeForDiff(readFileSync(absolutePath, 'utf-8'));
+        } catch { }
+    }
+    return { isNew, oldContent };
+}
+
 export interface ProposedFileChange {
     relativePath: string;
     absolutePath: string;
@@ -49,13 +70,7 @@ export function structuredFilesToChanges(
         if (!isPlausibleTargetPath(rawPath, rootDir)) continue;
 
         const absolutePath = normalize(resolve(rootDir, rawPath));
-        const isNew = !existsSync(absolutePath);
-        let oldContent = '';
-        if (!isNew) {
-            try {
-                oldContent = readFileSync(absolutePath, 'utf-8').replace(/\r\n/g, '\n');
-            } catch { }
-        }
+        const { isNew, oldContent } = readExistingFile(absolutePath);
 
         processedPaths.add(rawPath.toLowerCase());
         changes.push({
@@ -63,7 +78,7 @@ export function structuredFilesToChanges(
             absolutePath,
             isNew,
             oldContent,
-            newContent: file.content.replace(/\r\n/g, '\n').trimEnd() + '\n',
+            newContent: normalizeForDiff(file.content),
             isTruncated: false,
         });
     }
@@ -100,16 +115,10 @@ export function extractFileChanges(responseText: string, rootDir = process.cwd()
             if (!isPlausibleTargetPath(rawPath, rootDir)) continue;
 
             // Strip unclosed tags or trailing delimiters
-            content = content.replace(new RegExp(closeTag, 'gi'), '').trimEnd() + '\n';
+            content = content.replace(new RegExp(closeTag, 'gi'), '');
 
             const absolutePath = normalize(resolve(rootDir, rawPath));
-            const isNew = !existsSync(absolutePath);
-            let oldContent = '';
-            if (!isNew) {
-                try {
-                    oldContent = readFileSync(absolutePath, 'utf-8').replace(/\r\n/g, '\n');
-                } catch { }
-            }
+            const { isNew, oldContent } = readExistingFile(absolutePath);
 
             processedPaths.add(rawPath.toLowerCase());
             changes.push({
@@ -117,7 +126,7 @@ export function extractFileChanges(responseText: string, rootDir = process.cwd()
                 absolutePath,
                 isNew,
                 oldContent,
-                newContent: content,
+                newContent: normalizeForDiff(content),
                 isTruncated,
             });
         }
@@ -129,18 +138,12 @@ export function extractFileChanges(responseText: string, rootDir = process.cwd()
         let match: RegExpExecArray | null;
         while ((match = mdFileRegex.exec(normalizedResponse)) !== null) {
             const rawPath = match[1].trim().replace(/\\/g, '/');
-            const content = match[2].trimEnd() + '\n';
+            const content = match[2];
             if (processedPaths.has(rawPath.toLowerCase())) continue;
             if (!isPlausibleTargetPath(rawPath, rootDir)) continue;
 
             const absolutePath = normalize(resolve(rootDir, rawPath));
-            const isNew = !existsSync(absolutePath);
-            let oldContent = '';
-            if (!isNew) {
-                try {
-                    oldContent = readFileSync(absolutePath, 'utf-8').replace(/\r\n/g, '\n');
-                } catch { }
-            }
+            const { isNew, oldContent } = readExistingFile(absolutePath);
 
             processedPaths.add(rawPath.toLowerCase());
             changes.push({
@@ -148,7 +151,7 @@ export function extractFileChanges(responseText: string, rootDir = process.cwd()
                 absolutePath,
                 isNew,
                 oldContent,
-                newContent: content,
+                newContent: normalizeForDiff(content),
                 isTruncated: false,
             });
         }

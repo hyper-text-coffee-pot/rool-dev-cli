@@ -37,6 +37,10 @@ Rules:
 - If a file is large, still emit the complete contents — do not summarize, abbreviate, or use "// ... unchanged" placeholders.
 - If multiple files need changes or new files need to be created, wrap each one separately using the same one-time tags.
 - Output clean, modern code matching the user's TypeScript / ESM architecture.
+- CRITICAL: Preserve the existing file byte-for-byte outside of the specific lines needed for the
+  requested change. Do NOT reformat, reindent, reorder imports/members, change quote style, or
+  touch whitespace/blank lines/comments elsewhere in the file "as a drive-by cleanup" — every
+  incidental change makes the diff harder to review and increases risk. Only touch what the task requires.
 `.trim();
 
 export interface AccountUsage {
@@ -60,7 +64,10 @@ const FILE_EDIT_RESPONSE_SCHEMA: Record<string, unknown> = {
         },
         files: {
             type: 'array',
-            description: 'Every file being created or modified. Each entry holds the COMPLETE, updated file contents.',
+            description:
+                'Every file being created or modified. Each entry holds the COMPLETE, updated file contents. ' +
+                'Preserve the original file byte-for-byte outside the lines the task actually requires changing ' +
+                '— no incidental reformatting, reordering, or whitespace/quote-style drive-by cleanups.',
             items: {
                 type: 'object',
                 properties: {
