@@ -21,6 +21,27 @@ function isPlausibleTargetPath(rawPath: string, rootDir: string): boolean {
     return true;
 }
 
+/**
+ * Normalizes line endings and trailing whitespace identically for both the on-disk
+ * content and the model's proposed content, so the diff only ever shows real changes
+ * instead of spurious "no newline at end of file" noise from asymmetric normalization.
+ */
+function normalizeForDiff(content: string): string {
+    const normalized = content.replace(/\r\n/g, '\n');
+    return normalized.length === 0 ? '' : normalized.trimEnd() + '\n';
+}
+
+function readExistingFile(absolutePath: string): { isNew: boolean; oldContent: string } {
+    const isNew = !existsSync(absolutePath);
+    let oldContent = '';
+    if (!isNew) {
+        try {
+            oldContent = normalizeForDiff(readFileSync(absolutePath, 'utf-8'));
+        } catch { }
+    }
+    return { isNew, oldContent };
+}
+
 export interface ProposedFileChange {
     relativePath: string;
     absolutePath: string;
@@ -29,6 +50,40 @@ export interface ProposedFileChange {
     newContent: string;
     /** True if no <<<END_FILE>>> marker was found — content may be a truncated stream, not the full file. */
     isTruncated: boolean;
+}
+
+/**
+ * Builds proposed changes directly from a model's structured (responseSchema) output,
+ * bypassing text/regex parsing entirely. Still runs paths through the same plausibility
+ * guard as the text-tag path, since the model could still return a bogus/unsafe path.
+ */
+export function structuredFilesToChanges(
+    files: { path: string; content: string }[],
+    rootDir = process.cwd(),
+): ProposedFileChange[] {
+    const changes: ProposedFileChange[] = [];
+    const processedPaths = new Set<string>();
+
+    for (const file of files) {
+        const rawPath = file.path.trim().replace(/\\/g, '/');
+        if (!rawPath || processedPaths.has(rawPath.toLowerCase())) continue;
+        if (!isPlausibleTargetPath(rawPath, rootDir)) continue;
+
+        const absolutePath = normalize(resolve(rootDir, rawPath));
+        const { isNew, oldContent } = readExistingFile(absolutePath);
+
+        processedPaths.add(rawPath.toLowerCase());
+        changes.push({
+            relativePath: rawPath,
+            absolutePath,
+            isNew,
+            oldContent,
+            newContent: normalizeForDiff(file.content),
+            isTruncated: false,
+        });
+    }
+
+    return changes;
 }
 
 /**
@@ -60,16 +115,10 @@ export function extractFileChanges(responseText: string, rootDir = process.cwd()
             if (!isPlausibleTargetPath(rawPath, rootDir)) continue;
 
             // Strip unclosed tags or trailing delimiters
-            content = content.replace(new RegExp(closeTag, 'gi'), '').trimEnd() + '\n';
+            content = content.replace(new RegExp(closeTag, 'gi'), '');
 
             const absolutePath = normalize(resolve(rootDir, rawPath));
-            const isNew = !existsSync(absolutePath);
-            let oldContent = '';
-            if (!isNew) {
-                try {
-                    oldContent = readFileSync(absolutePath, 'utf-8').replace(/\r\n/g, '\n');
-                } catch { }
-            }
+            const { isNew, oldContent } = readExistingFile(absolutePath);
 
             processedPaths.add(rawPath.toLowerCase());
             changes.push({
@@ -77,7 +126,7 @@ export function extractFileChanges(responseText: string, rootDir = process.cwd()
                 absolutePath,
                 isNew,
                 oldContent,
-                newContent: content,
+                newContent: normalizeForDiff(content),
                 isTruncated,
             });
         }
@@ -89,18 +138,12 @@ export function extractFileChanges(responseText: string, rootDir = process.cwd()
         let match: RegExpExecArray | null;
         while ((match = mdFileRegex.exec(normalizedResponse)) !== null) {
             const rawPath = match[1].trim().replace(/\\/g, '/');
-            const content = match[2].trimEnd() + '\n';
+            const content = match[2];
             if (processedPaths.has(rawPath.toLowerCase())) continue;
             if (!isPlausibleTargetPath(rawPath, rootDir)) continue;
 
             const absolutePath = normalize(resolve(rootDir, rawPath));
-            const isNew = !existsSync(absolutePath);
-            let oldContent = '';
-            if (!isNew) {
-                try {
-                    oldContent = readFileSync(absolutePath, 'utf-8').replace(/\r\n/g, '\n');
-                } catch { }
-            }
+            const { isNew, oldContent } = readExistingFile(absolutePath);
 
             processedPaths.add(rawPath.toLowerCase());
             changes.push({
@@ -108,7 +151,7 @@ export function extractFileChanges(responseText: string, rootDir = process.cwd()
                 absolutePath,
                 isNew,
                 oldContent,
-                newContent: content,
+                newContent: normalizeForDiff(content),
                 isTruncated: false,
             });
         }

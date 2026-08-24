@@ -37,12 +37,63 @@ Rules:
 - If a file is large, still emit the complete contents — do not summarize, abbreviate, or use "// ... unchanged" placeholders.
 - If multiple files need changes or new files need to be created, wrap each one separately using the same one-time tags.
 - Output clean, modern code matching the user's TypeScript / ESM architecture.
+- CRITICAL: Preserve the existing file byte-for-byte outside of the specific lines needed for the
+  requested change. Do NOT reformat, reindent, reorder imports/members, change quote style, or
+  touch whitespace/blank lines/comments elsewhere in the file "as a drive-by cleanup" — every
+  incidental change makes the diff harder to review and increases risk. Only touch what the task requires.
 `.trim();
 
 export interface AccountUsage {
     plan: string;
     creditsBalance: number;
     totalCreditsUsed: number;
+}
+
+/**
+ * Structured-output schema for "write" mode. If the backend honors `responseSchema`,
+ * the model's reply arrives as a validated JSON object instead of free text wrapped in
+ * homemade tags — sidestepping truncation/nested-delimiter parsing entirely. We still
+ * keep the tag-based format in the prompt as a fallback in case this isn't honored.
+ */
+const FILE_EDIT_RESPONSE_SCHEMA: Record<string, unknown> = {
+    type: 'object',
+    properties: {
+        summary: {
+            type: 'string',
+            description: 'A short, human-readable explanation of the changes, for display in a CLI.',
+        },
+        files: {
+            type: 'array',
+            description:
+                'Every file being created or modified. Each entry holds the COMPLETE, updated file contents. ' +
+                'Preserve the original file byte-for-byte outside the lines the task actually requires changing ' +
+                '— no incidental reformatting, reordering, or whitespace/quote-style drive-by cleanups.',
+            items: {
+                type: 'object',
+                properties: {
+                    path: { type: 'string', description: 'Path relative to the project root, e.g. src/app/index.ts' },
+                    content: { type: 'string', description: 'The full, complete file contents after the change.' },
+                },
+                required: ['path', 'content'],
+                additionalProperties: false,
+            },
+        },
+    },
+    required: ['summary', 'files'],
+    additionalProperties: false,
+};
+
+function parseStructuredFileEdits(value: unknown): { summary?: string; files: { path: string; content: string }[] } | null {
+    if (!value || typeof value !== 'object') return null;
+    const obj = value as Record<string, unknown>;
+    if (!Array.isArray(obj.files)) return null;
+
+    const files = obj.files.filter(
+        (f: any): f is { path: string; content: string } => f && typeof f.path === 'string' && typeof f.content === 'string',
+    );
+    if (files.length === 0) return null;
+
+    return { summary: typeof obj.summary === 'string' ? obj.summary : undefined, files };
 }
 
 /**
@@ -309,7 +360,7 @@ export async function runAgentTask(
     promptText: string,
     contextPayload?: string,
     options?: { mode?: 'agent' | 'ask' | 'plan' },
-): Promise<{ text: string; fileTagNonce: string }> {
+): Promise<{ text: string; fileTagNonce: string; structuredFiles: { path: string; content: string }[] | null; structuredSummary?: string }> {
     const client = await ensureAuthenticated();
     const machineId = await getActiveMachine(client);
     const machine = client.machine(machineId);
@@ -350,10 +401,15 @@ export async function runAgentTask(
         contextPayload ? `\n[Workspace Code Context]\n${contextPayload}` : '',
     ].filter(Boolean).join('\n\n');
 
-    // Send prompt
-    await conversation.prompt(formattedPrompt);
+    // Send prompt — in write mode, also ask for schema-validated structured output as a
+    // more reliable alternative to the text-tag format (see FILE_EDIT_RESPONSE_SCHEMA).
+    await conversation.prompt(
+        formattedPrompt,
+        activeMode === 'write' ? { responseSchema: FILE_EDIT_RESPONSE_SCHEMA } : undefined,
+    );
 
     let completeResponse = '';
+    let jsonValue: unknown = null;
     let finishReason: string | undefined;
     let streamError: string | undefined;
     const s = p.spinner();
@@ -369,6 +425,8 @@ export async function runAgentTask(
                 }
                 process.stdout.write(event.content.text);
                 completeResponse += event.content.text;
+            } else if (event.type === 'output.delta' && event.content.type === 'json') {
+                jsonValue = event.content.value;
             } else if (event.type === 'completed') {
                 finishReason = event.finish;
             } else if (event.type === 'error') {
@@ -380,7 +438,7 @@ export async function runAgentTask(
     });
 
     if (firstDelta) {
-        s.stop(colors.error('No response received.'));
+        s.stop(jsonValue ? colors.success('Responding:') : colors.error('No response received.'));
     }
 
     // The run did not finish cleanly (hit the model's output token limit, errored,
@@ -404,18 +462,32 @@ export async function runAgentTask(
         throw new Error(`Incomplete response (finish reason: ${finishReason}). Refusing to treat partial output as a complete file.`);
     }
 
-    // Fallback: If streaming didn't catch everything, fetch the latest turn's content directly
+    // Fallback: If streaming didn't catch everything, fetch the latest turn's content directly.
+    // `content` is always an array of content parts (never a plain string), so scan it for
+    // whichever parts we're missing rather than assuming a single string blob.
     try {
         const turns = await conversation.listTurns();
         if (turns && turns.length > 0) {
             const lastTurn = turns[turns.length - 1];
-            const content = lastTurn.content as unknown;
-            if (lastTurn.role === 'assistant' && typeof content === 'string' && content.length > completeResponse.length) {
-                completeResponse = content;
+            if (lastTurn.role === 'assistant') {
+                for (const part of lastTurn.content) {
+                    if (part.type === 'text' && part.text.length > completeResponse.length) {
+                        completeResponse = part.text;
+                    } else if (part.type === 'json' && !jsonValue) {
+                        jsonValue = part.value;
+                    }
+                }
             }
         }
     } catch { }
 
+    const structured = parseStructuredFileEdits(jsonValue);
+
     console.log('\n');
-    return { text: completeResponse, fileTagNonce };
+    return {
+        text: completeResponse,
+        fileTagNonce,
+        structuredFiles: structured?.files ?? null,
+        structuredSummary: structured?.summary,
+    };
 }
